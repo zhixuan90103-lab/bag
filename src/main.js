@@ -28,6 +28,7 @@ const trayMinGap = 0.24;
 const trayZ = 4.85;
 const trayEntryOffsetX = 1.15;
 const trayLerpAlpha = 0.18;
+const rotationLerpAlpha = 0.12;
 
 const app = document.querySelector('#app');
 app.innerHTML = `
@@ -178,7 +179,7 @@ const grid = {
   cols: level.box.cols,
   rows: level.box.rows,
   cell: level.box.cellSize,
-  levels: 3,
+  levels: 1,
   levelHeight: itemCellSize,
   width: level.box.cols * level.box.cellSize,
   depth: level.box.rows * level.box.cellSize
@@ -409,6 +410,7 @@ function initItems() {
       lastValid: null,
       trayVisible: false,
       targetPosition: null,
+      targetRotationY: 0,
       mesh: createItemMesh(data)
     };
     item.mesh.userData.item = item;
@@ -488,9 +490,14 @@ function onPointerDown(event) {
   event.preventDefault();
   activeItem = picked;
   activeItem.wasPlaced = activeItem.placed;
+  activeItem.dragStartRotation = activeItem.rotation;
   activeItem.previousPlacement = activeItem.placed
     ? { gx: activeItem.gridX, gy: activeItem.gridY, level: activeItem.level, rotation: activeItem.rotation }
     : null;
+  activeItem.finalIntentPlacement = getFinalItemIntentPlacement(activeItem);
+  if (activeItem.finalIntentPlacement) {
+    applyIntentRotation(activeItem, activeItem.finalIntentPlacement.rotation);
+  }
   setItemScale(activeItem, activeItem.placed ? getBoardItemScale() * 1.06 : trayScale * 1.06, activeItem.placed ? 1.06 : trayScale * 1.06);
   activeItem.mesh.position.y = grid.pickupHeight;
   activeItem.placed = false;
@@ -512,7 +519,7 @@ function onPointerMove(event) {
   if (!raycaster.ray.intersectPlane(dragPlane, hitPoint)) return;
   activeItem.mesh.position.x = hitPoint.x + dragOffset.x;
   activeItem.mesh.position.z = hitPoint.z + dragOffset.z;
-  candidate = getCandidate(activeItem, activeItem.mesh.position);
+  candidate = getIntentCandidate(activeItem, activeItem.mesh.position);
   updateActiveItemDragScale(candidate);
   showGridGuide(candidate?.baseLevel ?? 0);
   updateGhost(candidate);
@@ -531,6 +538,8 @@ function onPointerUp(event) {
   }
   setItemShadow(activeItem, true);
   if (activeItem.placed) setItemScale(activeItem, getBoardItemScale(), 1);
+  activeItem.finalIntentPlacement = null;
+  activeItem.dragStartRotation = null;
   activeItem = null;
   candidate = null;
   hideGridGuide();
@@ -559,7 +568,11 @@ function updatePointer(event) {
 }
 
 function getCandidate(item, worldPosition) {
-  const shape = rotateShape(item.shape, item.rotation);
+  return getCandidateForRotation(item, worldPosition, item.rotation);
+}
+
+function getCandidateForRotation(item, worldPosition, rotation) {
+  const shape = rotateShape(item.shape, rotation);
   const cols = shape[0].length;
   const rows = shape.length;
   const localX = worldPosition.x - grid.left;
@@ -569,7 +582,84 @@ function getCandidate(item, worldPosition) {
   const inside = worldPosition.x >= grid.left - 0.8 && worldPosition.x <= -grid.left + 0.8
     && worldPosition.z >= grid.top - 0.8 && worldPosition.z <= -grid.top + 0.8;
   const placement = getPlacement(item, gx, gy, shape);
-  return { gx, gy, shape, inside, ...placement };
+  return { gx, gy, shape, inside, rotation, ...placement };
+}
+
+function getIntentCandidate(item, worldPosition) {
+  const current = getCandidate(item, worldPosition);
+  if (current.valid || !current.inside) return current;
+
+  const finalPlacement = item.finalIntentPlacement || getFinalItemIntentPlacement(item);
+  if (finalPlacement) {
+    applyIntentRotation(item, finalPlacement.rotation);
+  }
+
+  const matches = [];
+  for (let rotation = 0; rotation < 4; rotation += 1) {
+    if (rotation === item.rotation) continue;
+    const next = getCandidateForRotation(item, worldPosition, rotation);
+    if (next.valid) matches.push(next);
+  }
+
+  if (matches.length !== 1) return current;
+
+  applyIntentRotation(item, matches[0].rotation);
+  return matches[0];
+}
+
+function getFinalItemIntentPlacement(item) {
+  const remaining = items.filter((entry) => !entry.placed && entry !== item).length;
+  if (remaining !== 0) return null;
+
+  const matches = new Map();
+  for (let rotation = 0; rotation < 4; rotation += 1) {
+    const shape = rotateShape(item.shape, rotation);
+    const maxX = grid.cols - shape[0].length;
+    const maxY = grid.rows - shape.length;
+    for (let gy = 0; gy <= maxY; gy += 1) {
+      for (let gx = 0; gx <= maxX; gx += 1) {
+        const placement = getPlacement(item, gx, gy, shape);
+        if (!placement.valid) continue;
+        const key = getPlacementFootprintKey(gx, gy, shape, placement.baseLevel);
+        if (matches.has(key)) continue;
+        matches.set(key, {
+          gx,
+          gy,
+          shape,
+          rotation,
+          inside: true,
+          ...placement,
+          worldPosition: gridToWorld(gx, gy, shape)
+        });
+      }
+    }
+  }
+
+  return matches.size === 1 ? [...matches.values()][0] : null;
+}
+
+function getPlacementFootprintKey(gx, gy, shape, baseLevel) {
+  const cells = [];
+  for (let y = 0; y < shape.length; y += 1) {
+    for (let x = 0; x < shape[y].length; x += 1) {
+      if (shape[y][x]) cells.push(`${gx + x},${gy + y}`);
+    }
+  }
+  return `${baseLevel}:${cells.join('|')}`;
+}
+
+function applyIntentRotation(item, rotation) {
+  item.rotation = rotation;
+  setItemRotationTarget(item, rotation);
+}
+
+function setItemRotationTarget(item, rotation) {
+  item.targetRotationY = -rotation * Math.PI / 2;
+}
+
+function setItemRotationImmediate(item, rotation) {
+  setItemRotationTarget(item, rotation);
+  item.mesh.rotation.y = item.targetRotationY;
 }
 
 function canPlace(item, gx, gy, shape) {
@@ -645,7 +735,7 @@ function restoreActiveItem() {
     activeItem.gridY = previous.gy;
     activeItem.level = previous.level;
     activeItem.placed = true;
-    activeItem.mesh.rotation.y = -activeItem.rotation * Math.PI / 2;
+    setItemRotationImmediate(activeItem, activeItem.rotation);
     activeItem.mesh.position.copy(gridToWorld(activeItem.gridX, activeItem.gridY, shape));
     activeItem.mesh.position.y = getBoardItemY(1, activeItem.level);
     setItemScale(activeItem, getBoardItemScale(), 1);
@@ -655,6 +745,8 @@ function restoreActiveItem() {
 
   activeItem.mesh.position.copy(activeItem.homePosition);
   activeItem.mesh.position.y = getTableItemY(trayScale);
+  activeItem.rotation = activeItem.dragStartRotation ?? activeItem.rotation;
+  setItemRotationImmediate(activeItem, activeItem.rotation);
   setItemScale(activeItem, trayScale);
   setItemShadow(activeItem, true);
   activeItem.placed = false;
@@ -714,7 +806,7 @@ function rotateActiveOrLast() {
   if (!item) return;
   const previous = item.rotation;
   item.rotation = (item.rotation + 1) % 4;
-  item.mesh.rotation.y = -item.rotation * Math.PI / 2;
+  setItemRotationTarget(item, item.rotation);
 
   if (activeItem) {
     candidate = getCandidate(item, item.mesh.position);
@@ -733,7 +825,7 @@ function rotateActiveOrLast() {
     refreshStatus();
   } else {
     item.rotation = previous;
-    item.mesh.rotation.y = -item.rotation * Math.PI / 2;
+    setItemRotationTarget(item, item.rotation);
   }
 }
 
@@ -750,7 +842,8 @@ function resetLevel() {
     item.lastValid = null;
     item.trayVisible = false;
     item.targetPosition = null;
-    item.mesh.rotation.y = 0;
+    item.finalIntentPlacement = null;
+    setItemRotationImmediate(item, 0);
     item.mesh.visible = true;
     setItemScale(item, trayScale);
   }
@@ -813,6 +906,18 @@ function updateTrayAnimations() {
     if (item.mesh.position.distanceToSquared(item.targetPosition) < 0.0001) {
       item.mesh.position.copy(item.targetPosition);
     }
+  }
+}
+
+function updateRotationAnimations() {
+  for (const item of items) {
+    if (item.targetRotationY === undefined) continue;
+    const delta = item.targetRotationY - item.mesh.rotation.y;
+    if (Math.abs(delta) < 0.002) {
+      item.mesh.rotation.y = item.targetRotationY;
+      continue;
+    }
+    item.mesh.rotation.y += delta * rotationLerpAlpha;
   }
 }
 
@@ -1067,5 +1172,6 @@ function resize() {
 function animate() {
   requestAnimationFrame(animate);
   updateTrayAnimations();
+  updateRotationAnimations();
   renderer.render(scene, camera);
 }
