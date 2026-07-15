@@ -2,17 +2,28 @@ import * as THREE from 'three';
 import './styles.css';
 
 const level = {
-  box: { cols: 8, rows: 10, cellSize: 0.62 },
+  box: { cols: 8, rows: 8, cellSize: 0.62 },
   items: [
-    { id: 'book', label: '书本', shape: [[1, 1, 1]], color: '#4b7bec', home: [-1.85, 4.05] },
-    { id: 'tea', label: '茶盒', shape: [[1, 1], [1, 1]], color: '#20bf6b', home: [-0.5, 4.05] },
-    { id: 'sock', label: '袜子', shape: [[1, 1], [1, 0]], color: '#f7b731', home: [0.75, 4.05] },
-    { id: 'lamp', label: '台灯', shape: [[1], [1], [1]], color: '#eb3b5a', home: [1.9, 4.05] },
-    { id: 'camera', label: '相机', shape: [[1, 1], [0, 1]], color: '#2d3436', home: [-1.25, 5.1] },
-    { id: 'mug', label: '杯子', shape: [[1], [1]], color: '#a55eea', home: [0, 5.1] },
-    { id: 'toy', label: '玩具', shape: [[1, 1, 1], [0, 1, 0]], color: '#fd9644', home: [1.35, 5.1] }
+    { id: 'book', label: '书本', shape: [[1, 1, 1]], color: '#4b7bec', home: [-4.0, 4.85] },
+    { id: 'tea', label: '茶盒', shape: [[1, 1], [1, 1]], color: '#20bf6b', home: [-2.36, 4.85] },
+    { id: 'sock', label: '袜子', shape: [[1, 1], [1, 0]], color: '#f7b731', home: [-1.08, 4.85] },
+    { id: 'lamp', label: '台灯', shape: [[1], [1], [1]], color: '#eb3b5a', home: [0.02, 4.85] },
+    { id: 'camera', label: '相机', shape: [[1, 1], [0, 1]], color: '#2d3436', home: [1.08, 4.85] },
+    { id: 'mug', label: '杯子', shape: [[1], [1]], color: '#a55eea', home: [2.12, 4.85] },
+    { id: 'toy', label: '玩具', shape: [[1, 1, 1], [0, 1, 0]], color: '#fd9644', home: [3.42, 4.85] }
   ]
 };
+
+const trayScale = 0.72;
+const traySlots = [
+  [-3.95, 4.85],
+  [-2.62, 4.85],
+  [-1.35, 4.85],
+  [-0.12, 4.85],
+  [1.08, 4.85],
+  [2.24, 4.85],
+  [3.48, 4.85]
+];
 
 const app = document.querySelector('#app');
 app.innerHTML = `
@@ -34,11 +45,32 @@ app.innerHTML = `
   </div>
 `;
 
+const cameraPanel = document.createElement('aside');
+cameraPanel.className = 'camera-panel';
+cameraPanel.innerHTML = `
+  <div class="camera-panel__head">
+    <strong>Camera</strong>
+    <button id="cameraResetBtn" type="button">重置</button>
+  </div>
+  <label class="camera-mode">
+    <span>mode</span>
+    <select id="cameraModeSelect">
+      <option value="perspective">透视</option>
+      <option value="orthographic">正交</option>
+    </select>
+  </label>
+  <div class="camera-grid" id="cameraControls"></div>
+`;
+document.body.appendChild(cameraPanel);
+
 const canvas = document.querySelector('#game');
 const statusEl = document.querySelector('#status');
 const toastEl = document.querySelector('#toast');
 const rotateBtn = document.querySelector('#rotateBtn');
 const resetBtn = document.querySelector('#resetBtn');
+const cameraControlsEl = document.querySelector('#cameraControls');
+const cameraResetBtn = document.querySelector('#cameraResetBtn');
+const cameraModeSelect = document.querySelector('#cameraModeSelect');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#f6efe4');
@@ -48,9 +80,26 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-const camera = new THREE.OrthographicCamera(-4, 4, 6, -6, 0.1, 100);
-camera.position.set(4.7, 7.2, 6.1);
-camera.lookAt(0, 0, 0);
+const perspectiveCamera = new THREE.PerspectiveCamera(36, 390 / 844, 0.1, 100);
+const orthographicCamera = new THREE.OrthographicCamera(-2.92, 2.92, 6.1, -6.1, 0.1, 100);
+let camera = perspectiveCamera;
+const defaultCameraRig = {
+  mode: 'perspective',
+  x: 0,
+  y: 12,
+  z: 7.4,
+  targetX: 0,
+  targetY: 0.7,
+  targetZ: 0,
+  distance: 15.4,
+  screenX: 0,
+  screenY: 1.35,
+  fov: 45,
+  orthoSize: 13
+};
+const cameraRig = { ...defaultCameraRig };
+camera.position.set(cameraRig.x, cameraRig.y, cameraRig.z);
+camera.lookAt(cameraRig.targetX, cameraRig.targetY, cameraRig.targetZ);
 
 const ambient = new THREE.HemisphereLight('#ffffff', '#c8b7a0', 2.1);
 scene.add(ambient);
@@ -71,11 +120,14 @@ const grid = {
   cols: level.box.cols,
   rows: level.box.rows,
   cell: level.box.cellSize,
+  levels: 3,
+  levelHeight: 0.46,
   width: level.box.cols * level.box.cellSize,
   depth: level.box.rows * level.box.cellSize
 };
 grid.left = -grid.width / 2;
 grid.top = -grid.depth / 2;
+grid.wallHeight = grid.levels * grid.levelHeight;
 
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
@@ -83,6 +135,7 @@ const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const hitPoint = new THREE.Vector3();
 
 let items = [];
+let trayQueue = [];
 let activeItem = null;
 let dragOffset = new THREE.Vector3();
 let candidate = null;
@@ -91,6 +144,7 @@ let completionShown = false;
 initBoard();
 initTray();
 initItems();
+initCameraPanel();
 resize();
 animate();
 
@@ -104,8 +158,15 @@ canvas.addEventListener('pointerup', onPointerUp);
 canvas.addEventListener('pointercancel', onPointerUp);
 rotateBtn.addEventListener('click', rotateActiveOrLast);
 resetBtn.addEventListener('click', resetLevel);
+cameraResetBtn.addEventListener('click', resetCameraRig);
+cameraModeSelect.addEventListener('change', () => {
+  cameraRig.mode = cameraModeSelect.value;
+  applyCameraRig();
+});
 
 function initBoard() {
+  const wallThickness = 0.28;
+  const wallY = grid.wallHeight / 2;
   const floor = new THREE.Mesh(
     new THREE.BoxGeometry(grid.width + 0.22, 0.18, grid.depth + 0.22),
     new THREE.MeshStandardMaterial({ color: '#d7a968', roughness: 0.82 })
@@ -123,10 +184,10 @@ function initBoard() {
   boardGroup.add(base);
 
   const wallMat = new THREE.MeshStandardMaterial({ color: '#b87942', roughness: 0.86 });
-  addWall(0, 0.22, grid.top - 0.16, grid.width + 0.42, 0.42, 0.28, wallMat);
-  addWall(0, 0.22, -grid.top + 0.16, grid.width + 0.42, 0.42, 0.28, wallMat);
-  addWall(grid.left - 0.16, 0.22, 0, 0.28, 0.42, grid.depth + 0.42, wallMat);
-  addWall(-grid.left + 0.16, 0.22, 0, 0.28, 0.42, grid.depth + 0.42, wallMat);
+  addWall(0, wallY, grid.top - 0.16, grid.width + 0.42, grid.wallHeight, wallThickness, wallMat);
+  addWall(0, wallY, -grid.top + 0.16, grid.width + 0.42, grid.wallHeight, wallThickness, wallMat);
+  addWall(grid.left - 0.16, wallY, 0, wallThickness, grid.wallHeight, grid.depth + 0.42, wallMat);
+  addWall(-grid.left + 0.16, wallY, 0, wallThickness, grid.wallHeight, grid.depth + 0.42, wallMat);
 
   const lineMat = new THREE.LineBasicMaterial({ color: '#bb8d56', transparent: true, opacity: 0.5 });
   for (let c = 0; c <= grid.cols; c += 1) {
@@ -138,6 +199,8 @@ function initBoard() {
     addLine(grid.left, z, grid.left + grid.width, z, lineMat);
   }
 
+  addHeightLevels();
+
   const table = new THREE.Mesh(
     new THREE.BoxGeometry(6.2, 0.12, 12.8),
     new THREE.MeshStandardMaterial({ color: '#eadac7', roughness: 0.9 })
@@ -148,23 +211,63 @@ function initBoard() {
   table.renderOrder = -1;
 }
 
+function addHeightLevels() {
+  const layerMat = new THREE.LineBasicMaterial({ color: '#fff4df', transparent: true, opacity: 0.72 });
+  const guideMat = new THREE.MeshBasicMaterial({ color: '#ffe9bd', transparent: true, opacity: 0.08, depthWrite: false });
+
+  for (let levelIndex = 1; levelIndex <= grid.levels; levelIndex += 1) {
+    const y = levelIndex * grid.levelHeight;
+    addLevelFrame(y, layerMat);
+
+    if (levelIndex < grid.levels) {
+      const plane = new THREE.Mesh(new THREE.PlaneGeometry(grid.width, grid.depth), guideMat);
+      plane.rotation.x = -Math.PI / 2;
+      plane.position.set(0, y, 0);
+      plane.renderOrder = 1;
+      boardGroup.add(plane);
+    }
+  }
+
+  const markerMat = new THREE.MeshBasicMaterial({ color: '#6f4e36', transparent: true, opacity: 0.68 });
+  for (let levelIndex = 1; levelIndex <= grid.levels; levelIndex += 1) {
+    const marker = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.035, 0.42), markerMat);
+    marker.position.set(-grid.left + 0.34, levelIndex * grid.levelHeight, grid.top - 0.18);
+    boardGroup.add(marker);
+  }
+}
+
+function addLevelFrame(y, mat) {
+  addLevelLine(grid.left, y, grid.top, -grid.left, y, grid.top, mat);
+  addLevelLine(grid.left, y, -grid.top, -grid.left, y, -grid.top, mat);
+  addLevelLine(grid.left, y, grid.top, grid.left, y, -grid.top, mat);
+  addLevelLine(-grid.left, y, grid.top, -grid.left, y, -grid.top, mat);
+}
+
+function addLevelLine(x1, y1, z1, x2, y2, z2, mat) {
+  const geo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(x1, y1, z1),
+    new THREE.Vector3(x2, y2, z2)
+  ]);
+  boardGroup.add(new THREE.Line(geo, mat));
+}
+
 function initTray() {
   const trayBase = new THREE.Mesh(
-    new THREE.BoxGeometry(5.5, 0.1, 2.28),
+    new THREE.BoxGeometry(10.1, 0.1, 1.62),
     new THREE.MeshStandardMaterial({ color: '#cfb69a', roughness: 0.88 })
   );
-  trayBase.position.set(0, -0.03, 4.6);
+  trayBase.position.set(0, -0.03, 4.85);
   trayBase.receiveShadow = true;
   trayGroup.add(trayBase);
 
   const trayMat = new THREE.MeshStandardMaterial({ color: '#9c7657', roughness: 0.82 });
-  addTrayWall(0, 0.14, 3.42, 5.72, 0.28, 0.12, trayMat);
-  addTrayWall(0, 0.14, 5.78, 5.72, 0.28, 0.12, trayMat);
-  addTrayWall(-2.86, 0.14, 4.6, 0.12, 0.28, 2.36, trayMat);
-  addTrayWall(2.86, 0.14, 4.6, 0.12, 0.28, 2.36, trayMat);
+  addTrayWall(0, 0.14, 4.0, 10.32, 0.28, 0.12, trayMat);
+  addTrayWall(0, 0.14, 5.7, 10.32, 0.28, 0.12, trayMat);
+  addTrayWall(-5.16, 0.14, 4.85, 0.12, 0.28, 1.72, trayMat);
+  addTrayWall(5.16, 0.14, 4.85, 0.12, 0.28, 1.72, trayMat);
 
   const mat = new THREE.LineBasicMaterial({ color: '#fff6ea', transparent: true, opacity: 0.35 });
-  addTrayLine(-2.65, 4.58, 2.65, 4.58, mat);
+  addTrayLine(-4.9, 4.84, 4.9, 4.84, mat);
 }
 
 function addTrayWall(x, y, z, w, h, d, mat) {
@@ -211,11 +314,12 @@ function initItems() {
       mesh: createItemMesh(data)
     };
     item.mesh.userData.item = item;
-    item.mesh.position.set(data.home[0], 0.25, data.home[1]);
-    item.homePosition = item.mesh.position.clone();
+    item.mesh.scale.setScalar(trayScale);
     itemGroup.add(item.mesh);
     return item;
   });
+  trayQueue = [...items];
+  layoutTrayQueue();
   refreshStatus();
 }
 
@@ -344,13 +448,15 @@ function onPointerUp(event) {
   } else if (candidate?.inside) {
     activeItem.mesh.position.copy(activeItem.homePosition);
     activeItem.mesh.position.y = 0.25;
+    activeItem.mesh.scale.setScalar(trayScale);
     activeItem.placed = false;
   } else {
     activeItem.mesh.position.copy(activeItem.homePosition);
     activeItem.mesh.position.y = 0.25;
+    activeItem.mesh.scale.setScalar(trayScale);
     activeItem.placed = false;
   }
-  activeItem.mesh.scale.setScalar(1);
+  if (activeItem.placed) activeItem.mesh.scale.setScalar(1);
   activeItem = null;
   candidate = null;
   updateGhost(null);
@@ -423,9 +529,12 @@ function placeItem(item, next) {
   item.gridX = next.gx;
   item.gridY = next.gy;
   item.placed = true;
+  trayQueue = trayQueue.filter((entry) => entry !== item);
   item.mesh.position.copy(gridToWorld(next.gx, next.gy, next.shape));
   item.mesh.position.y = 0.32;
+  item.mesh.scale.setScalar(1);
   item.lastValid = { gx: next.gx, gy: next.gy, rotation: item.rotation };
+  layoutTrayQueue();
 }
 
 function gridToWorld(gx, gy, shape) {
@@ -488,6 +597,7 @@ function rotateActiveOrLast() {
 function resetLevel() {
   completionShown = false;
   toastEl.classList.remove('show');
+  trayQueue = [...items];
   for (const item of items) {
     item.rotation = 0;
     item.placed = false;
@@ -495,11 +605,22 @@ function resetLevel() {
     item.gridY = null;
     item.lastValid = null;
     item.mesh.rotation.y = 0;
-    item.mesh.scale.setScalar(1);
-    item.mesh.position.copy(item.homePosition);
-    item.mesh.position.y = 0.25;
+    item.mesh.scale.setScalar(trayScale);
   }
+  layoutTrayQueue();
   refreshStatus();
+}
+
+function layoutTrayQueue() {
+  trayQueue.forEach((item, index) => {
+    const slot = traySlots[index] ?? traySlots[traySlots.length - 1];
+    item.homePosition = new THREE.Vector3(slot[0], 0.25, slot[1]);
+    if (!item.placed && item !== activeItem) {
+      item.mesh.position.copy(item.homePosition);
+      item.mesh.position.y = 0.25;
+      item.mesh.scale.setScalar(trayScale);
+    }
+  });
 }
 
 function refreshStatus() {
@@ -511,6 +632,101 @@ function refreshStatus() {
   }
 }
 
+function initCameraPanel() {
+  const controls = [
+    { key: 'x', label: 'pos x', min: -8, max: 8, step: 0.1 },
+    { key: 'y', label: 'pos y', min: 2, max: 14, step: 0.1 },
+    { key: 'z', label: 'pos z', min: -2, max: 14, step: 0.1 },
+    { key: 'targetX', label: 'look x', min: -4, max: 4, step: 0.05 },
+    { key: 'targetY', label: 'look y', min: -1, max: 4, step: 0.05 },
+    { key: 'targetZ', label: 'look z', min: -3, max: 6, step: 0.05 },
+    { key: 'distance', label: 'distance', min: 4, max: 24, step: 0.1 },
+    { key: 'screenX', label: 'screen x', min: -4, max: 4, step: 0.05 },
+    { key: 'screenY', label: 'screen y', min: -4, max: 4, step: 0.05 },
+    { key: 'fov', label: 'fov', min: 22, max: 62, step: 1 },
+    { key: 'orthoSize', label: 'ortho size', min: 7, max: 18, step: 0.1 }
+  ];
+
+  cameraControlsEl.innerHTML = controls.map((control) => `
+    <label class="camera-control">
+      <span>${control.label}</span>
+      <input
+        data-camera-key="${control.key}"
+        type="range"
+        min="${control.min}"
+        max="${control.max}"
+        step="${control.step}"
+        value="${cameraRig[control.key]}"
+      />
+      <output data-camera-output="${control.key}">${formatCameraValue(cameraRig[control.key])}</output>
+    </label>
+  `).join('');
+
+  cameraControlsEl.addEventListener('input', (event) => {
+    const input = event.target.closest('[data-camera-key]');
+    if (!input) return;
+    const key = input.dataset.cameraKey;
+    cameraRig[key] = Number(input.value);
+    syncCameraPanelValue(key);
+    applyCameraRig();
+  });
+}
+
+function resetCameraRig() {
+  Object.assign(cameraRig, defaultCameraRig);
+  cameraModeSelect.value = cameraRig.mode;
+  for (const input of cameraControlsEl.querySelectorAll('[data-camera-key]')) {
+    const key = input.dataset.cameraKey;
+    input.value = cameraRig[key];
+    syncCameraPanelValue(key);
+  }
+  applyCameraRig();
+}
+
+function syncCameraPanelValue(key) {
+  const output = cameraControlsEl.querySelector(`[data-camera-output="${key}"]`);
+  if (output) output.textContent = formatCameraValue(cameraRig[key]);
+}
+
+function formatCameraValue(value) {
+  return Number(value).toFixed(2);
+}
+
+function applyCameraRig() {
+  const appRect = app.getBoundingClientRect();
+  const width = Math.max(1, Math.round(appRect.width));
+  const height = Math.max(1, Math.round(appRect.height));
+  const aspect = width / height;
+  camera = cameraRig.mode === 'orthographic' ? orthographicCamera : perspectiveCamera;
+
+  perspectiveCamera.aspect = aspect;
+  perspectiveCamera.fov = cameraRig.fov;
+
+  const orthoHeight = cameraRig.orthoSize;
+  orthographicCamera.top = orthoHeight / 2;
+  orthographicCamera.bottom = -orthoHeight / 2;
+  orthographicCamera.left = -orthoHeight * aspect / 2;
+  orthographicCamera.right = orthoHeight * aspect / 2;
+
+  const baseTarget = new THREE.Vector3(cameraRig.targetX, cameraRig.targetY, cameraRig.targetZ);
+  const directionAnchor = new THREE.Vector3(cameraRig.x, cameraRig.y, cameraRig.z);
+  const viewDirection = directionAnchor.sub(baseTarget).normalize();
+  const basePosition = baseTarget.clone().addScaledVector(viewDirection, cameraRig.distance);
+  camera.position.copy(basePosition);
+  camera.lookAt(baseTarget);
+  camera.updateMatrixWorld();
+
+  const screenRight = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+  const screenUp = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+  const screenPan = new THREE.Vector3()
+    .addScaledVector(screenRight, -cameraRig.screenX)
+    .addScaledVector(screenUp, -cameraRig.screenY);
+
+  camera.position.copy(basePosition).add(screenPan);
+  camera.lookAt(baseTarget.add(screenPan));
+  camera.updateProjectionMatrix();
+}
+
 function resize() {
   const viewportHeight = Math.round(window.visualViewport?.height ?? window.innerHeight);
   document.documentElement.style.setProperty('--viewport-height', `${viewportHeight}px`);
@@ -518,18 +734,7 @@ function resize() {
   const width = Math.max(1, Math.round(appRect.width));
   const height = Math.max(1, Math.round(appRect.height));
   renderer.setSize(width, height, false);
-  const aspect = width / height;
-  const isPortrait = height >= width;
-  const requiredWorldWidth = isPortrait ? 5.85 : 8.4;
-  const requiredWorldHeight = isPortrait ? 12.2 : 8.2;
-  const viewHeight = Math.max(requiredWorldHeight, requiredWorldWidth / aspect);
-  camera.top = viewHeight / 2;
-  camera.bottom = -viewHeight / 2;
-  camera.left = -viewHeight * aspect / 2;
-  camera.right = viewHeight * aspect / 2;
-  camera.position.set(4.2, 8.4, 7.4);
-  camera.lookAt(0, 1.05, 0.1);
-  camera.updateProjectionMatrix();
+  applyCameraRig();
 }
 
 function animate() {
