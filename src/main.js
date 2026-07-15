@@ -7,7 +7,7 @@ function rectShape(cols, rows) {
 }
 
 const level = {
-  box: { cols: 5, rows: 5, cellSize: 0.62 },
+  box: { cols: 5, rows: 5, cellSize: 0.78 },
   items: [
     { id: 'blue-large', label: '蓝块', shape: rectShape(2, 3), color: '#2367d9' },
     { id: 'red-large', label: '红块', shape: rectShape(3, 2), color: '#e63237' },
@@ -18,7 +18,7 @@ const level = {
   ]
 };
 
-const trayScale = 0.62;
+const trayScale = 0.8;
 const blockHeight = level.box.cellSize;
 const itemHalfHeight = blockHeight / 2;
 const traySlots = [
@@ -170,7 +170,7 @@ const grid = {
   rows: level.box.rows,
   cell: level.box.cellSize,
   levels: 3,
-  levelHeight: 0.46,
+  levelHeight: level.box.cellSize,
   width: level.box.cols * level.box.cellSize,
   depth: level.box.rows * level.box.cellSize
 };
@@ -310,6 +310,7 @@ function initItems() {
       placed: false,
       gridX: null,
       gridY: null,
+      level: null,
       lastValid: null,
       mesh: createItemMesh(data)
     };
@@ -372,6 +373,10 @@ function onPointerDown(event) {
   if (!picked) return;
   event.preventDefault();
   activeItem = picked;
+  activeItem.wasPlaced = activeItem.placed;
+  activeItem.previousPlacement = activeItem.placed
+    ? { gx: activeItem.gridX, gy: activeItem.gridY, level: activeItem.level, rotation: activeItem.rotation }
+    : null;
   activeItem.mesh.scale.setScalar(1.06);
   activeItem.mesh.position.y = grid.pickupHeight;
   activeItem.placed = false;
@@ -403,15 +408,9 @@ function onPointerUp(event) {
   if (candidate?.valid) {
     placeItem(activeItem, candidate);
   } else if (candidate?.inside) {
-    activeItem.mesh.position.copy(activeItem.homePosition);
-    activeItem.mesh.position.y = getTableItemY(trayScale);
-    activeItem.mesh.scale.setScalar(trayScale);
-    activeItem.placed = false;
+    restoreActiveItem();
   } else {
-    activeItem.mesh.position.copy(activeItem.homePosition);
-    activeItem.mesh.position.y = getTableItemY(trayScale);
-    activeItem.mesh.scale.setScalar(trayScale);
-    activeItem.placed = false;
+    restoreActiveItem();
   }
   if (activeItem.placed) activeItem.mesh.scale.setScalar(1);
   activeItem = null;
@@ -450,48 +449,93 @@ function getCandidate(item, worldPosition) {
   const gy = Math.round(localZ / grid.cell - rows / 2);
   const inside = worldPosition.x >= grid.left - 0.8 && worldPosition.x <= -grid.left + 0.8
     && worldPosition.z >= grid.top - 0.8 && worldPosition.z <= -grid.top + 0.8;
-  const valid = canPlace(item, gx, gy, shape);
-  return { gx, gy, shape, valid, inside };
+  const placement = getPlacement(item, gx, gy, shape);
+  return { gx, gy, shape, inside, ...placement };
 }
 
 function canPlace(item, gx, gy, shape) {
-  const occupied = buildOccupied(item);
+  return getPlacement(item, gx, gy, shape).valid;
+}
+
+function getPlacement(item, gx, gy, shape) {
+  const heightMap = buildHeightMap(item);
+  const itemHeight = getItemHeight(item);
+  let baseLevel = null;
+
   for (let y = 0; y < shape.length; y += 1) {
     for (let x = 0; x < shape[y].length; x += 1) {
       if (!shape[y][x]) continue;
       const cx = gx + x;
       const cy = gy + y;
-      if (cx < 0 || cy < 0 || cx >= grid.cols || cy >= grid.rows) return false;
-      if (occupied.has(`${cx},${cy}`)) return false;
+      if (cx < 0 || cy < 0 || cx >= grid.cols || cy >= grid.rows) {
+        return { valid: false, baseLevel: 0 };
+      }
+
+      const cellHeight = heightMap[cy][cx];
+      if (baseLevel === null) baseLevel = cellHeight;
+      if (cellHeight !== baseLevel) return { valid: false, baseLevel: cellHeight };
     }
   }
-  return true;
+
+  const resolvedLevel = baseLevel ?? 0;
+  return {
+    valid: resolvedLevel + itemHeight <= grid.levels,
+    baseLevel: resolvedLevel
+  };
 }
 
-function buildOccupied(exceptItem = null) {
-  const occupied = new Set();
+function buildHeightMap(exceptItem = null) {
+  const heightMap = Array.from({ length: grid.rows }, () => Array(grid.cols).fill(0));
   for (const item of items) {
     if (item === exceptItem || !item.placed) continue;
     const shape = rotateShape(item.shape, item.rotation);
+    const topLevel = (item.level ?? 0) + getItemHeight(item);
     for (let y = 0; y < shape.length; y += 1) {
       for (let x = 0; x < shape[y].length; x += 1) {
-        if (shape[y][x]) occupied.add(`${item.gridX + x},${item.gridY + y}`);
+        if (shape[y][x]) heightMap[item.gridY + y][item.gridX + x] = topLevel;
       }
     }
   }
-  return occupied;
+  return heightMap;
+}
+
+function getItemHeight(item) {
+  return item.height ?? 1;
 }
 
 function placeItem(item, next) {
   item.gridX = next.gx;
   item.gridY = next.gy;
+  item.level = next.baseLevel;
   item.placed = true;
   trayQueue = trayQueue.filter((entry) => entry !== item);
   item.mesh.position.copy(gridToWorld(next.gx, next.gy, next.shape));
-  item.mesh.position.y = getBoardItemY();
+  item.mesh.position.y = getBoardItemY(1, next.baseLevel);
   item.mesh.scale.setScalar(1);
-  item.lastValid = { gx: next.gx, gy: next.gy, rotation: item.rotation };
+  item.lastValid = { gx: next.gx, gy: next.gy, level: next.baseLevel, rotation: item.rotation };
   layoutTrayQueue();
+}
+
+function restoreActiveItem() {
+  if (activeItem.wasPlaced && activeItem.previousPlacement) {
+    const previous = activeItem.previousPlacement;
+    const shape = rotateShape(activeItem.shape, previous.rotation);
+    activeItem.rotation = previous.rotation;
+    activeItem.gridX = previous.gx;
+    activeItem.gridY = previous.gy;
+    activeItem.level = previous.level;
+    activeItem.placed = true;
+    activeItem.mesh.rotation.y = -activeItem.rotation * Math.PI / 2;
+    activeItem.mesh.position.copy(gridToWorld(activeItem.gridX, activeItem.gridY, shape));
+    activeItem.mesh.position.y = getBoardItemY(1, activeItem.level);
+    activeItem.mesh.scale.setScalar(1);
+    return;
+  }
+
+  activeItem.mesh.position.copy(activeItem.homePosition);
+  activeItem.mesh.position.y = getTableItemY(trayScale);
+  activeItem.mesh.scale.setScalar(trayScale);
+  activeItem.placed = false;
 }
 
 function gridToWorld(gx, gy, shape) {
@@ -519,7 +563,7 @@ function updateGhost(next) {
       const cell = new THREE.Mesh(new THREE.BoxGeometry(grid.cell * 0.9, 0.035, grid.cell * 0.9), mat);
       cell.position.set(
         grid.left + (next.gx + x + 0.5) * grid.cell,
-        0.12,
+        getBoardSurfaceY() + next.baseLevel * grid.levelHeight + 0.025,
         grid.top + (next.gy + y + 0.5) * grid.cell
       );
       ghostGroup.add(cell);
@@ -542,8 +586,10 @@ function rotateActiveOrLast() {
 
   const shape = rotateShape(item.shape, item.rotation);
   if (canPlace(item, item.gridX, item.gridY, shape)) {
+    const placement = getPlacement(item, item.gridX, item.gridY, shape);
     item.mesh.position.copy(gridToWorld(item.gridX, item.gridY, shape));
-    item.mesh.position.y = getBoardItemY();
+    item.level = placement.baseLevel;
+    item.mesh.position.y = getBoardItemY(1, item.level);
     refreshStatus();
   } else {
     item.rotation = previous;
@@ -560,6 +606,7 @@ function resetLevel() {
     item.placed = false;
     item.gridX = null;
     item.gridY = null;
+    item.level = null;
     item.lastValid = null;
     item.mesh.rotation.y = 0;
     item.mesh.visible = true;
@@ -717,8 +764,8 @@ function getBoardSurfaceY() {
   return 0.015 + 0.04;
 }
 
-function getBoardItemY(scale = 1) {
-  return getBoardSurfaceY() + itemHalfHeight * scale + 0.01;
+function getBoardItemY(scale = 1, level = 0) {
+  return getBoardSurfaceY() + level * grid.levelHeight + itemHalfHeight * scale + 0.01;
 }
 
 function getTableSurfaceY() {
