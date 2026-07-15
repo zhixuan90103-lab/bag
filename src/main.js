@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import './styles.css';
 
 function rectShape(cols, rows) {
@@ -6,24 +7,20 @@ function rectShape(cols, rows) {
 }
 
 const level = {
-  box: { cols: 8, rows: 7, cellSize: 0.62 },
+  box: { cols: 5, rows: 5, cellSize: 0.62 },
   items: [
-    { id: 'large-blue', label: '大块', shape: rectShape(3, 4), color: '#2367d9' },
-    { id: 'tall-blue', label: '长块', shape: rectShape(2, 4), color: '#1f65d7' },
-    { id: 'red-bar', label: '红条', shape: rectShape(1, 4), color: '#e63237' },
-    { id: 'white-bar', label: '白条', shape: rectShape(4, 1), color: '#f4f2ee' },
-    { id: 'yellow-left', label: '黄块', shape: rectShape(3, 2), color: '#f2d33c' },
-    { id: 'yellow-right', label: '黄块', shape: rectShape(3, 2), color: '#f0cf35' },
-    { id: 'red-wide', label: '红块', shape: rectShape(3, 2), color: '#e63237' },
-    { id: 'white-square', label: '白块', shape: rectShape(2, 2), color: '#f2f0ea' },
-    { id: 'gray-bar', label: '灰条', shape: rectShape(3, 1), color: '#7f8784' },
-    { id: 'gray-small', label: '灰块', shape: rectShape(2, 1), color: '#7d8582' },
-    { id: 'gray-dot', label: '小块', shape: rectShape(1, 1), color: '#818986' }
+    { id: 'blue-large', label: '蓝块', shape: rectShape(2, 3), color: '#2367d9' },
+    { id: 'red-large', label: '红块', shape: rectShape(3, 2), color: '#e63237' },
+    { id: 'yellow-mid', label: '黄块', shape: rectShape(2, 2), color: '#f2d33c' },
+    { id: 'green-mid', label: '绿块', shape: rectShape(2, 2), color: '#44c06a' },
+    { id: 'purple-bar', label: '紫条', shape: rectShape(1, 3), color: '#9b6ce3' },
+    { id: 'orange-small', label: '橙块', shape: rectShape(1, 2), color: '#f28b2e' }
   ]
 };
 
 const trayScale = 0.62;
-const itemHalfHeight = 0.19;
+const blockHeight = level.box.cellSize;
+const itemHalfHeight = blockHeight / 2;
 const traySlots = [
   [-1.55, 4.85],
   [0, 4.85],
@@ -248,7 +245,7 @@ function initBoard() {
   addWall(-grid.left + wallOffset, wallY, 0, wallThickness, grid.wallHeight, grid.depth + 0.14, wallMat);
 
   boardGroup.add(gridGuideGroup);
-  gridGuideGroup.visible = false;
+  gridGuideGroup.visible = true;
   const lineMat = new THREE.LineBasicMaterial({ color: '#b86b2d', transparent: true, opacity: 0.82 });
   for (let c = 0; c <= grid.cols; c += 1) {
     const x = grid.left + c * grid.cell;
@@ -328,33 +325,20 @@ function initItems() {
 
 function createItemMesh(item) {
   const group = new THREE.Group();
-  const cells = getShapeCells(item.shape);
-  const width = item.shape[0].length * grid.cell;
-  const depth = item.shape.length * grid.cell;
-  const material = new THREE.MeshStandardMaterial({ color: item.color, roughness: 0.68, metalness: 0.02 });
-  const edgeMaterial = new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.32 });
-
-  for (const cell of cells) {
-    const block = new THREE.Mesh(
-      new THREE.BoxGeometry(grid.cell * 0.88, 0.38, grid.cell * 0.88),
-      material
-    );
-    block.position.set(
-      cell.x * grid.cell - width / 2 + grid.cell / 2,
-      0,
-      cell.y * grid.cell - depth / 2 + grid.cell / 2
-    );
-    block.castShadow = true;
-    block.receiveShadow = true;
-    group.add(block);
-
-    const cap = new THREE.Mesh(
-      new THREE.BoxGeometry(grid.cell * 0.72, 0.012, grid.cell * 0.72),
-      edgeMaterial
-    );
-    cap.position.set(block.position.x, 0.197, block.position.z);
-    group.add(cap);
-  }
+  const width = item.shape[0].length * grid.cell - 0.08;
+  const depth = item.shape.length * grid.cell - 0.08;
+  const material = new THREE.MeshStandardMaterial({
+    color: item.color,
+    roughness: 0.54,
+    metalness: 0.015
+  });
+  const block = new THREE.Mesh(
+    new RoundedBoxGeometry(width, blockHeight, depth, 6, 0.08),
+    material
+  );
+  block.castShadow = true;
+  block.receiveShadow = true;
+  group.add(block);
 
   return group;
 }
@@ -432,7 +416,6 @@ function onPointerUp(event) {
   if (activeItem.placed) activeItem.mesh.scale.setScalar(1);
   activeItem = null;
   candidate = null;
-  gridGuideGroup.visible = false;
   updateGhost(null);
   refreshStatus();
 }
@@ -505,7 +488,7 @@ function placeItem(item, next) {
   item.placed = true;
   trayQueue = trayQueue.filter((entry) => entry !== item);
   item.mesh.position.copy(gridToWorld(next.gx, next.gy, next.shape));
-  item.mesh.position.y = 0.32;
+  item.mesh.position.y = getBoardItemY();
   item.mesh.scale.setScalar(1);
   item.lastValid = { gx: next.gx, gy: next.gy, rotation: item.rotation };
   layoutTrayQueue();
@@ -560,7 +543,7 @@ function rotateActiveOrLast() {
   const shape = rotateShape(item.shape, item.rotation);
   if (canPlace(item, item.gridX, item.gridY, shape)) {
     item.mesh.position.copy(gridToWorld(item.gridX, item.gridY, shape));
-    item.mesh.position.y = 0.32;
+    item.mesh.position.y = getBoardItemY();
     refreshStatus();
   } else {
     item.rotation = previous;
@@ -583,7 +566,7 @@ function resetLevel() {
     item.mesh.scale.setScalar(trayScale);
   }
   layoutTrayQueue();
-  gridGuideGroup.visible = false;
+  gridGuideGroup.visible = true;
   refreshStatus();
 }
 
@@ -728,6 +711,14 @@ function applyTableRig() {
   tableMesh.scale.set(tableRig.width, tableRig.thickness, tableRig.depth);
   tableMesh.position.set(tableRig.x, tableRig.y, tableRig.z);
   if (items.length) layoutTrayQueue();
+}
+
+function getBoardSurfaceY() {
+  return 0.015 + 0.04;
+}
+
+function getBoardItemY(scale = 1) {
+  return getBoardSurfaceY() + itemHalfHeight * scale + 0.01;
 }
 
 function getTableSurfaceY() {
