@@ -1,16 +1,24 @@
 import * as THREE from 'three';
 import './styles.css';
 
+function rectShape(cols, rows) {
+  return Array.from({ length: rows }, () => Array(cols).fill(1));
+}
+
 const level = {
-  box: { cols: 8, rows: 8, cellSize: 0.62 },
+  box: { cols: 8, rows: 7, cellSize: 0.62 },
   items: [
-    { id: 'book', label: '书本', shape: [[1, 1, 1]], color: '#4b7bec', home: [-4.0, 4.85] },
-    { id: 'tea', label: '茶盒', shape: [[1, 1], [1, 1]], color: '#20bf6b', home: [-2.36, 4.85] },
-    { id: 'sock', label: '袜子', shape: [[1, 1], [1, 0]], color: '#f7b731', home: [-1.08, 4.85] },
-    { id: 'lamp', label: '台灯', shape: [[1], [1], [1]], color: '#eb3b5a', home: [0.02, 4.85] },
-    { id: 'camera', label: '相机', shape: [[1, 1], [0, 1]], color: '#2d3436', home: [1.08, 4.85] },
-    { id: 'mug', label: '杯子', shape: [[1], [1]], color: '#a55eea', home: [2.12, 4.85] },
-    { id: 'toy', label: '玩具', shape: [[1, 1, 1], [0, 1, 0]], color: '#fd9644', home: [3.42, 4.85] }
+    { id: 'large-blue', label: '大块', shape: rectShape(3, 4), color: '#2367d9' },
+    { id: 'tall-blue', label: '长块', shape: rectShape(2, 4), color: '#1f65d7' },
+    { id: 'red-bar', label: '红条', shape: rectShape(1, 4), color: '#e63237' },
+    { id: 'white-bar', label: '白条', shape: rectShape(4, 1), color: '#f4f2ee' },
+    { id: 'yellow-left', label: '黄块', shape: rectShape(3, 2), color: '#f2d33c' },
+    { id: 'yellow-right', label: '黄块', shape: rectShape(3, 2), color: '#f0cf35' },
+    { id: 'red-wide', label: '红块', shape: rectShape(3, 2), color: '#e63237' },
+    { id: 'white-square', label: '白块', shape: rectShape(2, 2), color: '#f2f0ea' },
+    { id: 'gray-bar', label: '灰条', shape: rectShape(3, 1), color: '#7f8784' },
+    { id: 'gray-small', label: '灰块', shape: rectShape(2, 1), color: '#7d8582' },
+    { id: 'gray-dot', label: '小块', shape: rectShape(1, 1), color: '#818986' }
   ]
 };
 
