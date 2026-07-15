@@ -18,14 +18,16 @@ const level = {
   ]
 };
 
+const itemCellSize = 0.78;
 const trayScale = 0.8;
-const blockHeight = level.box.cellSize;
+const blockHeight = itemCellSize;
 const itemHalfHeight = blockHeight / 2;
-const traySlots = [
-  [-1.55, 4.85],
-  [0, 4.85],
-  [1.55, 4.85]
-];
+const trayVisibleCount = 3;
+const traySlotXs = [-1.55, 0, 1.55];
+const trayMinGap = 0.24;
+const trayZ = 4.85;
+const trayEntryOffsetX = 1.15;
+const trayLerpAlpha = 0.18;
 
 const app = document.querySelector('#app');
 app.innerHTML = `
@@ -115,7 +117,7 @@ const defaultCameraRig = {
   mode: 'perspective',
   x: 0,
   y: 12,
-  z: 7.4,
+  z: 5,
   targetX: 0,
   targetY: 0.7,
   targetZ: 0,
@@ -142,9 +144,9 @@ const defaultLightRig = {
   keyX: -1,
   keyY: 8,
   keyZ: -1.2,
-  keyIntensity: 2.6,
-  ambientIntensity: 2.1,
-  shadowIntensity: 0.42
+  keyIntensity: 1.5,
+  ambientIntensity: 2,
+  shadowIntensity: 0.3
 };
 const lightRig = { ...defaultLightRig };
 
@@ -171,7 +173,7 @@ const grid = {
   rows: level.box.rows,
   cell: level.box.cellSize,
   levels: 3,
-  levelHeight: level.box.cellSize,
+  levelHeight: itemCellSize,
   width: level.box.cols * level.box.cellSize,
   depth: level.box.rows * level.box.cellSize
 };
@@ -316,10 +318,26 @@ function addTrayLine(x1, z1, x2, z2, mat) {
 }
 
 function addWall(x, y, z, w, h, d, mat) {
-  const wall = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  const wall = new THREE.Group();
+  const radius = Math.min(w, d) / 2;
+  const runsAlongX = w >= d;
+  const coreW = runsAlongX ? Math.max(w - radius * 2, 0.01) : w;
+  const coreD = runsAlongX ? d : Math.max(d - radius * 2, 0.01);
+  const core = new THREE.Mesh(new THREE.BoxGeometry(coreW, h, coreD), mat);
+  core.castShadow = true;
+  core.receiveShadow = true;
+  wall.add(core);
+
+  const capGeo = new THREE.CylinderGeometry(radius, radius, h, 18);
+  const capOffset = runsAlongX ? coreW / 2 : coreD / 2;
+  for (const side of [-1, 1]) {
+    const cap = new THREE.Mesh(capGeo, mat);
+    cap.position.set(runsAlongX ? side * capOffset : 0, 0, runsAlongX ? 0 : side * capOffset);
+    cap.castShadow = true;
+    cap.receiveShadow = true;
+    wall.add(cap);
+  }
   wall.position.set(x, y, z);
-  wall.castShadow = true;
-  wall.receiveShadow = true;
   boardGroup.add(wall);
 }
 
@@ -383,22 +401,24 @@ function initItems() {
       gridY: null,
       level: null,
       lastValid: null,
+      trayVisible: false,
+      targetPosition: null,
       mesh: createItemMesh(data)
     };
     item.mesh.userData.item = item;
-    item.mesh.scale.setScalar(trayScale);
+    setItemScale(item, trayScale);
     itemGroup.add(item.mesh);
     return item;
   });
   trayQueue = [...items];
-  layoutTrayQueue();
+  layoutTrayQueue({ animate: false });
   refreshStatus();
 }
 
 function createItemMesh(item) {
   const group = new THREE.Group();
-  const width = item.shape[0].length * grid.cell - 0.08;
-  const depth = item.shape.length * grid.cell - 0.08;
+  const width = item.shape[0].length * itemCellSize - 0.08;
+  const depth = item.shape.length * itemCellSize - 0.08;
   const material = new THREE.MeshStandardMaterial({
     color: item.color,
     roughness: 0.54,
@@ -413,6 +433,23 @@ function createItemMesh(item) {
   group.add(block);
 
   return group;
+}
+
+function getBoardItemScale() {
+  return grid.cell / itemCellSize;
+}
+
+function setItemScale(item, xzScale, yScale = xzScale) {
+  item.mesh.scale.set(xzScale, yScale, xzScale);
+}
+
+function updateActiveItemDragScale(next) {
+  if (!activeItem) return;
+  if (next?.inside) {
+    setItemScale(activeItem, getBoardItemScale() * 1.06, 1.06);
+    return;
+  }
+  setItemScale(activeItem, trayScale * 1.06);
 }
 
 function getShapeCells(shape) {
@@ -448,7 +485,7 @@ function onPointerDown(event) {
   activeItem.previousPlacement = activeItem.placed
     ? { gx: activeItem.gridX, gy: activeItem.gridY, level: activeItem.level, rotation: activeItem.rotation }
     : null;
-  activeItem.mesh.scale.setScalar(1.06);
+  setItemScale(activeItem, activeItem.placed ? getBoardItemScale() * 1.06 : trayScale * 1.06, activeItem.placed ? 1.06 : trayScale * 1.06);
   activeItem.mesh.position.y = grid.pickupHeight;
   activeItem.placed = false;
   setItemShadow(activeItem, false);
@@ -470,6 +507,7 @@ function onPointerMove(event) {
   activeItem.mesh.position.x = hitPoint.x + dragOffset.x;
   activeItem.mesh.position.z = hitPoint.z + dragOffset.z;
   candidate = getCandidate(activeItem, activeItem.mesh.position);
+  updateActiveItemDragScale(candidate);
   showGridGuide(candidate?.baseLevel ?? 0);
   updateGhost(candidate);
 }
@@ -486,7 +524,7 @@ function onPointerUp(event) {
     restoreActiveItem();
   }
   setItemShadow(activeItem, true);
-  if (activeItem.placed) activeItem.mesh.scale.setScalar(1);
+  if (activeItem.placed) setItemScale(activeItem, getBoardItemScale(), 1);
   activeItem = null;
   candidate = null;
   hideGridGuide();
@@ -586,10 +624,10 @@ function placeItem(item, next) {
   trayQueue = trayQueue.filter((entry) => entry !== item);
   item.mesh.position.copy(gridToWorld(next.gx, next.gy, next.shape));
   item.mesh.position.y = getBoardItemY(1, next.baseLevel);
-  item.mesh.scale.setScalar(1);
+  setItemScale(item, getBoardItemScale(), 1);
   setItemShadow(item, true);
   item.lastValid = { gx: next.gx, gy: next.gy, level: next.baseLevel, rotation: item.rotation };
-  layoutTrayQueue();
+  layoutTrayQueue({ animate: true });
 }
 
 function restoreActiveItem() {
@@ -604,14 +642,14 @@ function restoreActiveItem() {
     activeItem.mesh.rotation.y = -activeItem.rotation * Math.PI / 2;
     activeItem.mesh.position.copy(gridToWorld(activeItem.gridX, activeItem.gridY, shape));
     activeItem.mesh.position.y = getBoardItemY(1, activeItem.level);
-    activeItem.mesh.scale.setScalar(1);
+    setItemScale(activeItem, getBoardItemScale(), 1);
     setItemShadow(activeItem, true);
     return;
   }
 
   activeItem.mesh.position.copy(activeItem.homePosition);
   activeItem.mesh.position.y = getTableItemY(trayScale);
-  activeItem.mesh.scale.setScalar(trayScale);
+  setItemScale(activeItem, trayScale);
   setItemShadow(activeItem, true);
   activeItem.placed = false;
 }
@@ -685,6 +723,7 @@ function rotateActiveOrLast() {
     item.mesh.position.copy(gridToWorld(item.gridX, item.gridY, shape));
     item.level = placement.baseLevel;
     item.mesh.position.y = getBoardItemY(1, item.level);
+    setItemScale(item, getBoardItemScale(), 1);
     refreshStatus();
   } else {
     item.rotation = previous;
@@ -703,29 +742,72 @@ function resetLevel() {
     item.gridY = null;
     item.level = null;
     item.lastValid = null;
+    item.trayVisible = false;
+    item.targetPosition = null;
     item.mesh.rotation.y = 0;
     item.mesh.visible = true;
-    item.mesh.scale.setScalar(trayScale);
+    setItemScale(item, trayScale);
   }
-  layoutTrayQueue();
+  layoutTrayQueue({ animate: false });
   hideGridGuide();
   refreshStatus();
 }
 
-function layoutTrayQueue() {
-  trayQueue.forEach((item, index) => {
-    const visibleInTray = index < traySlots.length;
-    item.mesh.visible = visibleInTray;
-    if (!visibleInTray) return;
+function layoutTrayQueue({ animate = true } = {}) {
+  const visibleItems = trayQueue.slice(0, trayVisibleCount);
+  const visibleWidths = visibleItems.map((item) => getTrayItemWidth(item));
+  const slotXs = getTraySlotXs(visibleWidths);
 
-    const slot = traySlots[index];
-    item.homePosition = new THREE.Vector3(slot[0], getTableItemY(trayScale), slot[1]);
-    if (!item.placed && item !== activeItem) {
-      item.mesh.position.copy(item.homePosition);
-      item.mesh.position.y = getTableItemY(trayScale);
-      item.mesh.scale.setScalar(trayScale);
+  trayQueue.forEach((item, index) => {
+    const visibleInTray = index < trayVisibleCount;
+    if (!visibleInTray) {
+      item.trayVisible = false;
+      if (!item.placed && item !== activeItem) item.mesh.visible = false;
+      return;
     }
+
+    const centerX = slotXs[index];
+    const target = new THREE.Vector3(centerX, getTableItemY(trayScale), trayZ);
+    const enteringTray = !item.trayVisible;
+    item.homePosition = target.clone();
+    item.targetPosition = target.clone();
+    item.mesh.visible = true;
+    if (!item.placed && item !== activeItem) {
+      setItemScale(item, trayScale);
+      if (!animate) {
+        item.mesh.position.copy(target);
+      } else if (enteringTray) {
+        item.mesh.position.set(target.x + trayEntryOffsetX, target.y, target.z);
+      }
+    }
+    item.trayVisible = true;
   });
+}
+
+function getTraySlotXs(widths) {
+  if (!widths.length) return [];
+  const centers = traySlotXs.slice(0, widths.length);
+  for (let i = 1; i < centers.length; i += 1) {
+    const minDistance = (widths[i - 1] + widths[i]) / 2 + trayMinGap;
+    centers[i] = Math.max(centers[i], centers[i - 1] + minDistance);
+  }
+  const centerOffset = centers.reduce((sum, x) => sum + x, 0) / centers.length;
+  return centers.map((x) => x - centerOffset);
+}
+
+function getTrayItemWidth(item) {
+  const shape = rotateShape(item.shape, item.rotation);
+  return (shape[0].length * itemCellSize - 0.08) * trayScale;
+}
+
+function updateTrayAnimations() {
+  for (const item of trayQueue) {
+    if (item.placed || item === activeItem || !item.targetPosition || !item.mesh.visible) continue;
+    item.mesh.position.lerp(item.targetPosition, trayLerpAlpha);
+    if (item.mesh.position.distanceToSquared(item.targetPosition) < 0.0001) {
+      item.mesh.position.copy(item.targetPosition);
+    }
+  }
 }
 
 function refreshStatus() {
@@ -852,7 +934,7 @@ function applyTableRig() {
   if (!tableMesh) return;
   tableMesh.scale.set(tableRig.width, tableRig.thickness, tableRig.depth);
   tableMesh.position.set(tableRig.x, tableRig.y, tableRig.z);
-  if (items.length) layoutTrayQueue();
+  if (items.length) layoutTrayQueue({ animate: false });
 }
 
 function getBoardSurfaceY() {
@@ -978,5 +1060,6 @@ function resize() {
 
 function animate() {
   requestAnimationFrame(animate);
+  updateTrayAnimations();
   renderer.render(scene, camera);
 }
