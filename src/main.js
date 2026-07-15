@@ -137,7 +137,13 @@ scene.add(ambient);
 const keyLight = new THREE.DirectionalLight('#ffffff', 2.6);
 keyLight.position.set(2.5, 8, 4);
 keyLight.castShadow = true;
-keyLight.shadow.mapSize.set(1024, 1024);
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.left = -8;
+keyLight.shadow.camera.right = 8;
+keyLight.shadow.camera.top = 8;
+keyLight.shadow.camera.bottom = -8;
+keyLight.shadow.camera.near = 0.5;
+keyLight.shadow.camera.far = 24;
 scene.add(keyLight);
 
 const defaultLightRig = {
