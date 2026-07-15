@@ -15,6 +15,7 @@ const level = {
 };
 
 const trayScale = 0.62;
+const itemHalfHeight = 0.19;
 const traySlots = [
   [-1.55, 4.85],
   [0, 4.85],
@@ -59,6 +60,28 @@ cameraPanel.innerHTML = `
 `;
 document.body.appendChild(cameraPanel);
 
+const lightPanel = document.createElement('aside');
+lightPanel.className = 'camera-panel light-panel';
+lightPanel.innerHTML = `
+  <div class="camera-panel__head">
+    <strong>Light</strong>
+    <button id="lightResetBtn" type="button">重置</button>
+  </div>
+  <div class="camera-grid" id="lightControls"></div>
+`;
+document.body.appendChild(lightPanel);
+
+const tablePanel = document.createElement('aside');
+tablePanel.className = 'camera-panel table-panel';
+tablePanel.innerHTML = `
+  <div class="camera-panel__head">
+    <strong>Table</strong>
+    <button id="tableResetBtn" type="button">重置</button>
+  </div>
+  <div class="camera-grid" id="tableControls"></div>
+`;
+document.body.appendChild(tablePanel);
+
 const canvas = document.querySelector('#game');
 const statusEl = document.querySelector('#status');
 const toastEl = document.querySelector('#toast');
@@ -67,6 +90,10 @@ const resetBtn = document.querySelector('#resetBtn');
 const cameraControlsEl = document.querySelector('#cameraControls');
 const cameraResetBtn = document.querySelector('#cameraResetBtn');
 const cameraModeSelect = document.querySelector('#cameraModeSelect');
+const lightControlsEl = document.querySelector('#lightControls');
+const lightResetBtn = document.querySelector('#lightResetBtn');
+const tableControlsEl = document.querySelector('#tableControls');
+const tableResetBtn = document.querySelector('#tableResetBtn');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#f6efe4');
@@ -106,10 +133,31 @@ keyLight.castShadow = true;
 keyLight.shadow.mapSize.set(1024, 1024);
 scene.add(keyLight);
 
+const defaultLightRig = {
+  keyX: -1,
+  keyY: 8,
+  keyZ: -1.2,
+  keyIntensity: 2.6,
+  ambientIntensity: 2.1,
+  shadowIntensity: 0.42
+};
+const lightRig = { ...defaultLightRig };
+
+const defaultTableRig = {
+  width: 9.6,
+  depth: 18,
+  thickness: 0.12,
+  x: 0,
+  y: -0.22,
+  z: -0.65
+};
+const tableRig = { ...defaultTableRig };
+
 const boardGroup = new THREE.Group();
 const trayGroup = new THREE.Group();
 const itemGroup = new THREE.Group();
 const ghostGroup = new THREE.Group();
+const gridGuideGroup = new THREE.Group();
 scene.add(boardGroup, trayGroup, ghostGroup, itemGroup);
 
 const grid = {
@@ -137,11 +185,14 @@ let activeItem = null;
 let dragOffset = new THREE.Vector3();
 let candidate = null;
 let completionShown = false;
+let tableMesh = null;
 
 initBoard();
 initTray();
 initItems();
 initCameraPanel();
+initLightPanel();
+initTablePanel();
 resize();
 animate();
 
@@ -160,13 +211,16 @@ cameraModeSelect.addEventListener('change', () => {
   cameraRig.mode = cameraModeSelect.value;
   applyCameraRig();
 });
+lightResetBtn.addEventListener('click', resetLightRig);
+tableResetBtn.addEventListener('click', resetTableRig);
 
 function initBoard() {
-  const wallThickness = 0.28;
+  const wallThickness = 0.08;
+  const wallOffset = 0.055;
   const wallY = grid.wallHeight / 2;
   const floor = new THREE.Mesh(
-    new THREE.BoxGeometry(grid.width + 0.22, 0.18, grid.depth + 0.22),
-    new THREE.MeshStandardMaterial({ color: '#d7a968', roughness: 0.82 })
+    new THREE.BoxGeometry(grid.width + 0.08, 0.18, grid.depth + 0.08),
+    new THREE.MeshStandardMaterial({ color: '#df9341', roughness: 0.84 })
   );
   floor.position.y = -0.11;
   floor.receiveShadow = true;
@@ -174,19 +228,20 @@ function initBoard() {
 
   const base = new THREE.Mesh(
     new THREE.BoxGeometry(grid.width, 0.08, grid.depth),
-    new THREE.MeshStandardMaterial({ color: '#f5d6a6', roughness: 0.9 })
+    new THREE.MeshStandardMaterial({ color: '#f1b56d', roughness: 0.9 })
   );
   base.position.y = 0.015;
   base.receiveShadow = true;
   boardGroup.add(base);
 
-  const wallMat = new THREE.MeshStandardMaterial({ color: '#b87942', roughness: 0.86 });
-  addWall(0, wallY, grid.top - 0.16, grid.width + 0.42, grid.wallHeight, wallThickness, wallMat);
-  addWall(0, wallY, -grid.top + 0.16, grid.width + 0.42, grid.wallHeight, wallThickness, wallMat);
-  addWall(grid.left - 0.16, wallY, 0, wallThickness, grid.wallHeight, grid.depth + 0.42, wallMat);
-  addWall(-grid.left + 0.16, wallY, 0, wallThickness, grid.wallHeight, grid.depth + 0.42, wallMat);
+  const wallMat = new THREE.MeshStandardMaterial({ color: '#e69a46', roughness: 0.86 });
+  addWall(0, wallY, grid.top - wallOffset, grid.width + 0.14, grid.wallHeight, wallThickness, wallMat);
+  addWall(grid.left - wallOffset, wallY, 0, wallThickness, grid.wallHeight, grid.depth + 0.14, wallMat);
+  addWall(-grid.left + wallOffset, wallY, 0, wallThickness, grid.wallHeight, grid.depth + 0.14, wallMat);
 
-  const lineMat = new THREE.LineBasicMaterial({ color: '#bb8d56', transparent: true, opacity: 0.5 });
+  boardGroup.add(gridGuideGroup);
+  gridGuideGroup.visible = false;
+  const lineMat = new THREE.LineBasicMaterial({ color: '#b86b2d', transparent: true, opacity: 0.82 });
   for (let c = 0; c <= grid.cols; c += 1) {
     const x = grid.left + c * grid.cell;
     addLine(x, grid.top, x, grid.top + grid.depth, lineMat);
@@ -196,75 +251,18 @@ function initBoard() {
     addLine(grid.left, z, grid.left + grid.width, z, lineMat);
   }
 
-  addHeightLevels();
-
-  const table = new THREE.Mesh(
-    new THREE.BoxGeometry(6.2, 0.12, 12.8),
+  tableMesh = new THREE.Mesh(
+    new THREE.BoxGeometry(1, 1, 1),
     new THREE.MeshStandardMaterial({ color: '#eadac7', roughness: 0.9 })
   );
-  table.position.set(0, -0.22, 0.95);
-  table.receiveShadow = true;
-  scene.add(table);
-  table.renderOrder = -1;
-}
-
-function addHeightLevels() {
-  const layerMat = new THREE.LineBasicMaterial({ color: '#fff4df', transparent: true, opacity: 0.72 });
-  const guideMat = new THREE.MeshBasicMaterial({ color: '#ffe9bd', transparent: true, opacity: 0.08, depthWrite: false });
-
-  for (let levelIndex = 1; levelIndex <= grid.levels; levelIndex += 1) {
-    const y = levelIndex * grid.levelHeight;
-    addLevelFrame(y, layerMat);
-
-    if (levelIndex < grid.levels) {
-      const plane = new THREE.Mesh(new THREE.PlaneGeometry(grid.width, grid.depth), guideMat);
-      plane.rotation.x = -Math.PI / 2;
-      plane.position.set(0, y, 0);
-      plane.renderOrder = 1;
-      boardGroup.add(plane);
-    }
-  }
-
-  const markerMat = new THREE.MeshBasicMaterial({ color: '#6f4e36', transparent: true, opacity: 0.68 });
-  for (let levelIndex = 1; levelIndex <= grid.levels; levelIndex += 1) {
-    const marker = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.035, 0.42), markerMat);
-    marker.position.set(-grid.left + 0.34, levelIndex * grid.levelHeight, grid.top - 0.18);
-    boardGroup.add(marker);
-  }
-}
-
-function addLevelFrame(y, mat) {
-  addLevelLine(grid.left, y, grid.top, -grid.left, y, grid.top, mat);
-  addLevelLine(grid.left, y, -grid.top, -grid.left, y, -grid.top, mat);
-  addLevelLine(grid.left, y, grid.top, grid.left, y, -grid.top, mat);
-  addLevelLine(-grid.left, y, grid.top, -grid.left, y, -grid.top, mat);
-}
-
-function addLevelLine(x1, y1, z1, x2, y2, z2, mat) {
-  const geo = new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(x1, y1, z1),
-    new THREE.Vector3(x2, y2, z2)
-  ]);
-  boardGroup.add(new THREE.Line(geo, mat));
+  tableMesh.receiveShadow = true;
+  scene.add(tableMesh);
+  tableMesh.renderOrder = -1;
+  applyTableRig();
 }
 
 function initTray() {
-  const trayBase = new THREE.Mesh(
-    new THREE.BoxGeometry(10.1, 0.1, 1.62),
-    new THREE.MeshStandardMaterial({ color: '#cfb69a', roughness: 0.88 })
-  );
-  trayBase.position.set(0, -0.03, 4.85);
-  trayBase.receiveShadow = true;
-  trayGroup.add(trayBase);
-
-  const trayMat = new THREE.MeshStandardMaterial({ color: '#9c7657', roughness: 0.82 });
-  addTrayWall(0, 0.14, 4.0, 10.32, 0.28, 0.12, trayMat);
-  addTrayWall(0, 0.14, 5.7, 10.32, 0.28, 0.12, trayMat);
-  addTrayWall(-5.16, 0.14, 4.85, 0.12, 0.28, 1.72, trayMat);
-  addTrayWall(5.16, 0.14, 4.85, 0.12, 0.28, 1.72, trayMat);
-
-  const mat = new THREE.LineBasicMaterial({ color: '#fff6ea', transparent: true, opacity: 0.35 });
-  addTrayLine(-4.9, 4.84, 4.9, 4.84, mat);
+  trayGroup.clear();
 }
 
 function addTrayWall(x, y, z, w, h, d, mat) {
@@ -296,7 +294,7 @@ function addLine(x1, z1, x2, z2, mat) {
     new THREE.Vector3(x1, 0.075, z1),
     new THREE.Vector3(x2, 0.075, z2)
   ]);
-  boardGroup.add(new THREE.Line(geo, mat));
+  gridGuideGroup.add(new THREE.Line(geo, mat));
 }
 
 function initItems() {
@@ -350,39 +348,7 @@ function createItemMesh(item) {
     group.add(cap);
   }
 
-  const label = makeLabel(item.label);
-  label.position.set(0, 0.245, 0);
-  label.rotation.x = -Math.PI / 2;
-  group.add(label);
   return group;
-}
-
-function makeLabel(text) {
-  const labelCanvas = document.createElement('canvas');
-  labelCanvas.width = 256;
-  labelCanvas.height = 96;
-  const ctx = labelCanvas.getContext('2d');
-  ctx.fillStyle = 'rgba(255,255,255,0.78)';
-  roundRect(ctx, 20, 22, 216, 52, 16);
-  ctx.fill();
-  ctx.fillStyle = '#503b2c';
-  ctx.font = '600 28px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, 128, 48);
-  const texture = new THREE.CanvasTexture(labelCanvas);
-  const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true });
-  return new THREE.Mesh(new THREE.PlaneGeometry(0.72, 0.27), material);
-}
-
-function roundRect(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
 }
 
 function getShapeCells(shape) {
@@ -423,6 +389,7 @@ function onPointerDown(event) {
   raycaster.ray.intersectPlane(dragPlane, hitPoint);
   dragOffset.copy(activeItem.mesh.position).sub(hitPoint);
   dragOffset.y = 0;
+  gridGuideGroup.visible = true;
   updateGhost(null);
 }
 
@@ -445,18 +412,19 @@ function onPointerUp(event) {
     placeItem(activeItem, candidate);
   } else if (candidate?.inside) {
     activeItem.mesh.position.copy(activeItem.homePosition);
-    activeItem.mesh.position.y = 0.25;
+    activeItem.mesh.position.y = getTableItemY(trayScale);
     activeItem.mesh.scale.setScalar(trayScale);
     activeItem.placed = false;
   } else {
     activeItem.mesh.position.copy(activeItem.homePosition);
-    activeItem.mesh.position.y = 0.25;
+    activeItem.mesh.position.y = getTableItemY(trayScale);
     activeItem.mesh.scale.setScalar(trayScale);
     activeItem.placed = false;
   }
   if (activeItem.placed) activeItem.mesh.scale.setScalar(1);
   activeItem = null;
   candidate = null;
+  gridGuideGroup.visible = false;
   updateGhost(null);
   refreshStatus();
 }
@@ -607,6 +575,7 @@ function resetLevel() {
     item.mesh.scale.setScalar(trayScale);
   }
   layoutTrayQueue();
+  gridGuideGroup.visible = false;
   refreshStatus();
 }
 
@@ -617,10 +586,10 @@ function layoutTrayQueue() {
     if (!visibleInTray) return;
 
     const slot = traySlots[index];
-    item.homePosition = new THREE.Vector3(slot[0], 0.25, slot[1]);
+    item.homePosition = new THREE.Vector3(slot[0], getTableItemY(trayScale), slot[1]);
     if (!item.placed && item !== activeItem) {
       item.mesh.position.copy(item.homePosition);
-      item.mesh.position.y = 0.25;
+      item.mesh.position.y = getTableItemY(trayScale);
       item.mesh.scale.setScalar(trayScale);
     }
   });
@@ -633,6 +602,132 @@ function refreshStatus() {
     completionShown = true;
     toastEl.classList.add('show');
   }
+}
+
+function initLightPanel() {
+  const controls = [
+    { key: 'keyX', label: 'key x', min: -10, max: 10, step: 0.1 },
+    { key: 'keyY', label: 'key y', min: 1, max: 16, step: 0.1 },
+    { key: 'keyZ', label: 'key z', min: -10, max: 10, step: 0.1 },
+    { key: 'keyIntensity', label: 'key power', min: 0, max: 6, step: 0.1 },
+    { key: 'ambientIntensity', label: 'ambient', min: 0, max: 5, step: 0.1 },
+    { key: 'shadowIntensity', label: 'shadow', min: 0, max: 1, step: 0.01 }
+  ];
+
+  lightControlsEl.innerHTML = controls.map((control) => `
+    <label class="camera-control">
+      <span>${control.label}</span>
+      <input
+        data-light-key="${control.key}"
+        type="range"
+        min="${control.min}"
+        max="${control.max}"
+        step="${control.step}"
+        value="${lightRig[control.key]}"
+      />
+      <output data-light-output="${control.key}">${formatCameraValue(lightRig[control.key])}</output>
+    </label>
+  `).join('');
+
+  lightControlsEl.addEventListener('input', (event) => {
+    const input = event.target.closest('[data-light-key]');
+    if (!input) return;
+    const key = input.dataset.lightKey;
+    lightRig[key] = Number(input.value);
+    syncLightPanelValue(key);
+    applyLightRig();
+  });
+
+  applyLightRig();
+}
+
+function resetLightRig() {
+  Object.assign(lightRig, defaultLightRig);
+  for (const input of lightControlsEl.querySelectorAll('[data-light-key]')) {
+    const key = input.dataset.lightKey;
+    input.value = lightRig[key];
+    syncLightPanelValue(key);
+  }
+  applyLightRig();
+}
+
+function syncLightPanelValue(key) {
+  const output = lightControlsEl.querySelector(`[data-light-output="${key}"]`);
+  if (output) output.textContent = formatCameraValue(lightRig[key]);
+}
+
+function applyLightRig() {
+  keyLight.position.set(lightRig.keyX, lightRig.keyY, lightRig.keyZ);
+  keyLight.intensity = lightRig.keyIntensity;
+  keyLight.shadow.intensity = lightRig.shadowIntensity;
+  ambient.intensity = lightRig.ambientIntensity;
+}
+
+function initTablePanel() {
+  const controls = [
+    { key: 'width', label: 'width', min: 3, max: 12, step: 0.1 },
+    { key: 'depth', label: 'depth', min: 6, max: 24, step: 0.1 },
+    { key: 'thickness', label: 'thick', min: 0.04, max: 0.5, step: 0.01 },
+    { key: 'x', label: 'pos x', min: -4, max: 4, step: 0.05 },
+    { key: 'y', label: 'pos y', min: -1, max: 0.5, step: 0.01 },
+    { key: 'z', label: 'pos z', min: -3, max: 5, step: 0.05 }
+  ];
+
+  tableControlsEl.innerHTML = controls.map((control) => `
+    <label class="camera-control">
+      <span>${control.label}</span>
+      <input
+        data-table-key="${control.key}"
+        type="range"
+        min="${control.min}"
+        max="${control.max}"
+        step="${control.step}"
+        value="${tableRig[control.key]}"
+      />
+      <output data-table-output="${control.key}">${formatCameraValue(tableRig[control.key])}</output>
+    </label>
+  `).join('');
+
+  tableControlsEl.addEventListener('input', (event) => {
+    const input = event.target.closest('[data-table-key]');
+    if (!input) return;
+    const key = input.dataset.tableKey;
+    tableRig[key] = Number(input.value);
+    syncTablePanelValue(key);
+    applyTableRig();
+  });
+
+  applyTableRig();
+}
+
+function resetTableRig() {
+  Object.assign(tableRig, defaultTableRig);
+  for (const input of tableControlsEl.querySelectorAll('[data-table-key]')) {
+    const key = input.dataset.tableKey;
+    input.value = tableRig[key];
+    syncTablePanelValue(key);
+  }
+  applyTableRig();
+}
+
+function syncTablePanelValue(key) {
+  const output = tableControlsEl.querySelector(`[data-table-output="${key}"]`);
+  if (output) output.textContent = formatCameraValue(tableRig[key]);
+}
+
+function applyTableRig() {
+  if (!tableMesh) return;
+  tableMesh.scale.set(tableRig.width, tableRig.thickness, tableRig.depth);
+  tableMesh.position.set(tableRig.x, tableRig.y, tableRig.z);
+  if (items.length) layoutTrayQueue();
+}
+
+function getTableSurfaceY() {
+  return tableRig.y + tableRig.thickness / 2;
+}
+
+function getTableItemY(scale = 1) {
+  return getTableSurfaceY() + itemHalfHeight * scale + 0.01;
 }
 
 function initCameraPanel() {

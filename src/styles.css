@@ -58,6 +58,17 @@ body {
   backdrop-filter: blur(16px);
 }
 
+.light-panel {
+  left: auto;
+  right: calc(50% + 235px);
+}
+
+.table-panel {
+  top: calc(50% + 230px);
+  left: auto;
+  right: calc(50% + 235px);
+}
+
 .camera-panel__head {
   display: flex;
   align-items: center;
@@ -70,7 +81,9 @@ body {
   font-size: 15px;
 }
 
-#cameraResetBtn {
+#cameraResetBtn,
+#lightResetBtn,
+#tableResetBtn {
   width: 54px;
   height: 30px;
   font-size: 12px;
