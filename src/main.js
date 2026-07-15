@@ -14,15 +14,11 @@ const level = {
   ]
 };
 
-const trayScale = 0.72;
+const trayScale = 0.62;
 const traySlots = [
-  [-3.95, 4.85],
-  [-2.62, 4.85],
-  [-1.35, 4.85],
-  [-0.12, 4.85],
-  [1.08, 4.85],
-  [2.24, 4.85],
-  [3.48, 4.85]
+  [-1.55, 4.85],
+  [0, 4.85],
+  [1.55, 4.85]
 ];
 
 const app = document.querySelector('#app');
@@ -128,6 +124,7 @@ const grid = {
 grid.left = -grid.width / 2;
 grid.top = -grid.depth / 2;
 grid.wallHeight = grid.levels * grid.levelHeight;
+grid.pickupHeight = grid.wallHeight + 0.7;
 
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
@@ -418,10 +415,11 @@ function onPointerDown(event) {
   event.preventDefault();
   activeItem = picked;
   activeItem.mesh.scale.setScalar(1.06);
-  activeItem.mesh.position.y = 0.52;
+  activeItem.mesh.position.y = grid.pickupHeight;
   activeItem.placed = false;
   canvas.setPointerCapture(event.pointerId);
   updatePointer(event);
+  dragPlane.constant = -grid.pickupHeight;
   raycaster.ray.intersectPlane(dragPlane, hitPoint);
   dragOffset.copy(activeItem.mesh.position).sub(hitPoint);
   dragOffset.y = 0;
@@ -605,6 +603,7 @@ function resetLevel() {
     item.gridY = null;
     item.lastValid = null;
     item.mesh.rotation.y = 0;
+    item.mesh.visible = true;
     item.mesh.scale.setScalar(trayScale);
   }
   layoutTrayQueue();
@@ -613,7 +612,11 @@ function resetLevel() {
 
 function layoutTrayQueue() {
   trayQueue.forEach((item, index) => {
-    const slot = traySlots[index] ?? traySlots[traySlots.length - 1];
+    const visibleInTray = index < traySlots.length;
+    item.mesh.visible = visibleInTray;
+    if (!visibleInTray) return;
+
+    const slot = traySlots[index];
     item.homePosition = new THREE.Vector3(slot[0], 0.25, slot[1]);
     if (!item.placed && item !== activeItem) {
       item.mesh.position.copy(item.homePosition);
