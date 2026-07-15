@@ -13,6 +13,7 @@ const level = {
     { id: 'red-large', label: '红块', shape: rectShape(3, 2), color: '#e63237' },
     { id: 'yellow-mid', label: '黄块', shape: rectShape(2, 2), color: '#f2d33c' },
     { id: 'green-mid', label: '绿块', shape: rectShape(2, 2), color: '#44c06a' },
+    { id: 'teal-box', label: 'BOX', shape: rectShape(2, 2), height: 2, color: '#2ec4b6' },
     { id: 'purple-bar', label: '紫条', shape: rectShape(1, 3), color: '#9b6ce3' },
     { id: 'orange-small', label: '橙块', shape: rectShape(1, 2), color: '#f28b2e' }
   ]
@@ -21,7 +22,6 @@ const level = {
 const itemCellSize = 0.78;
 const trayScale = 0.8;
 const blockHeight = itemCellSize;
-const itemHalfHeight = blockHeight / 2;
 const trayVisibleCount = 3;
 const traySlotXs = [-1.55, 0, 1.55];
 const trayMinGap = 0.24;
@@ -179,7 +179,7 @@ const grid = {
   cols: level.box.cols,
   rows: level.box.rows,
   cell: level.box.cellSize,
-  levels: 1,
+  levels: 3,
   levelHeight: itemCellSize,
   width: level.box.cols * level.box.cellSize,
   depth: level.box.rows * level.box.cellSize
@@ -427,13 +427,14 @@ function createItemMesh(item) {
   const group = new THREE.Group();
   const width = item.shape[0].length * itemCellSize - 0.08;
   const depth = item.shape.length * itemCellSize - 0.08;
+  const height = getItemVisualHeight(item);
   const material = new THREE.MeshStandardMaterial({
     color: item.color,
     roughness: 0.54,
     metalness: 0.015
   });
   const block = new THREE.Mesh(
-    new RoundedBoxGeometry(width, blockHeight, depth, 6, 0.08),
+    new RoundedBoxGeometry(width, height, depth, 6, 0.08),
     material
   );
   block.castShadow = true;
@@ -667,9 +668,8 @@ function canPlace(item, gx, gy, shape) {
 }
 
 function getPlacement(item, gx, gy, shape) {
-  const heightMap = buildHeightMap(item);
+  const voxelGrid = buildVoxelGrid(item);
   const itemHeight = getItemHeight(item);
-  let baseLevel = null;
 
   for (let y = 0; y < shape.length; y += 1) {
     for (let x = 0; x < shape[y].length; x += 1) {
@@ -680,36 +680,84 @@ function getPlacement(item, gx, gy, shape) {
         return { valid: false, baseLevel: 0 };
       }
 
-      const cellHeight = heightMap[cy][cx];
-      if (baseLevel === null) baseLevel = cellHeight;
-      if (cellHeight !== baseLevel) return { valid: false, baseLevel: cellHeight };
     }
   }
 
-  const resolvedLevel = baseLevel ?? 0;
-  return {
-    valid: resolvedLevel + itemHeight <= grid.levels,
-    baseLevel: resolvedLevel
-  };
+  for (let baseLevel = 0; baseLevel <= grid.levels - itemHeight; baseLevel += 1) {
+    if (!isVoxelSpaceEmpty(voxelGrid, gx, gy, baseLevel, shape, itemHeight)) continue;
+    if (!hasFullSupport(voxelGrid, gx, gy, baseLevel, shape)) continue;
+    return { valid: true, baseLevel };
+  }
+
+  return { valid: false, baseLevel: getLowestBlockedLevel(voxelGrid, gx, gy, shape) };
 }
 
-function buildHeightMap(exceptItem = null) {
-  const heightMap = Array.from({ length: grid.rows }, () => Array(grid.cols).fill(0));
+function buildVoxelGrid(exceptItem = null) {
+  const voxelGrid = Array.from({ length: grid.levels }, () => (
+    Array.from({ length: grid.rows }, () => Array(grid.cols).fill(null))
+  ));
+
   for (const item of items) {
     if (item === exceptItem || !item.placed) continue;
     const shape = rotateShape(item.shape, item.rotation);
-    const topLevel = (item.level ?? 0) + getItemHeight(item);
+    const baseLevel = item.level ?? 0;
+    const itemHeight = getItemHeight(item);
     for (let y = 0; y < shape.length; y += 1) {
       for (let x = 0; x < shape[y].length; x += 1) {
-        if (shape[y][x]) heightMap[item.gridY + y][item.gridX + x] = topLevel;
+        if (!shape[y][x]) continue;
+        for (let level = baseLevel; level < baseLevel + itemHeight; level += 1) {
+          if (!voxelGrid[level]?.[item.gridY + y]) continue;
+          voxelGrid[level][item.gridY + y][item.gridX + x] = item.id;
+        }
       }
     }
   }
-  return heightMap;
+
+  return voxelGrid;
+}
+
+function isVoxelSpaceEmpty(voxelGrid, gx, gy, baseLevel, shape, itemHeight) {
+  for (let level = baseLevel; level < baseLevel + itemHeight; level += 1) {
+    for (let y = 0; y < shape.length; y += 1) {
+      for (let x = 0; x < shape[y].length; x += 1) {
+        if (!shape[y][x]) continue;
+        if (voxelGrid[level][gy + y][gx + x] !== null) return false;
+      }
+    }
+  }
+  return true;
+}
+
+function hasFullSupport(voxelGrid, gx, gy, baseLevel, shape) {
+  if (baseLevel === 0) return true;
+  const supportLevel = baseLevel - 1;
+  for (let y = 0; y < shape.length; y += 1) {
+    for (let x = 0; x < shape[y].length; x += 1) {
+      if (!shape[y][x]) continue;
+      if (voxelGrid[supportLevel][gy + y][gx + x] === null) return false;
+    }
+  }
+  return true;
+}
+
+function getLowestBlockedLevel(voxelGrid, gx, gy, shape) {
+  for (let level = 0; level < grid.levels; level += 1) {
+    for (let y = 0; y < shape.length; y += 1) {
+      for (let x = 0; x < shape[y].length; x += 1) {
+        if (!shape[y][x]) continue;
+        if (voxelGrid[level][gy + y][gx + x] !== null) return level;
+      }
+    }
+  }
+  return 0;
 }
 
 function getItemHeight(item) {
   return item.height ?? 1;
+}
+
+function getItemVisualHeight(item) {
+  return blockHeight * getItemHeight(item);
 }
 
 function placeItem(item, next) {
@@ -719,7 +767,7 @@ function placeItem(item, next) {
   item.placed = true;
   trayQueue = trayQueue.filter((entry) => entry !== item);
   item.mesh.position.copy(gridToWorld(next.gx, next.gy, next.shape));
-  item.mesh.position.y = getBoardItemY(1, next.baseLevel);
+  item.mesh.position.y = getBoardItemY(item, 1, next.baseLevel);
   setItemScale(item, getBoardItemScale(), 1);
   setItemShadow(item, true);
   item.lastValid = { gx: next.gx, gy: next.gy, level: next.baseLevel, rotation: item.rotation };
@@ -737,14 +785,14 @@ function restoreActiveItem() {
     activeItem.placed = true;
     setItemRotationImmediate(activeItem, activeItem.rotation);
     activeItem.mesh.position.copy(gridToWorld(activeItem.gridX, activeItem.gridY, shape));
-    activeItem.mesh.position.y = getBoardItemY(1, activeItem.level);
+    activeItem.mesh.position.y = getBoardItemY(activeItem, 1, activeItem.level);
     setItemScale(activeItem, getBoardItemScale(), 1);
     setItemShadow(activeItem, true);
     return;
   }
 
   activeItem.mesh.position.copy(activeItem.homePosition);
-  activeItem.mesh.position.y = getTableItemY(trayScale);
+  activeItem.mesh.position.y = getTableItemY(activeItem, trayScale);
   activeItem.rotation = activeItem.dragStartRotation ?? activeItem.rotation;
   setItemRotationImmediate(activeItem, activeItem.rotation);
   setItemScale(activeItem, trayScale);
@@ -820,7 +868,7 @@ function rotateActiveOrLast() {
     const placement = getPlacement(item, item.gridX, item.gridY, shape);
     item.mesh.position.copy(gridToWorld(item.gridX, item.gridY, shape));
     item.level = placement.baseLevel;
-    item.mesh.position.y = getBoardItemY(1, item.level);
+    item.mesh.position.y = getBoardItemY(item, 1, item.level);
     setItemScale(item, getBoardItemScale(), 1);
     refreshStatus();
   } else {
@@ -866,7 +914,7 @@ function layoutTrayQueue({ animate = true } = {}) {
     }
 
     const centerX = slotXs[index];
-    const target = new THREE.Vector3(centerX, getTableItemY(trayScale), trayZ);
+    const target = new THREE.Vector3(centerX, getTableItemY(item, trayScale), trayZ);
     const enteringTray = !item.trayVisible;
     item.homePosition = target.clone();
     item.targetPosition = target.clone();
@@ -1052,16 +1100,16 @@ function getBoardSurfaceY() {
   return 0.015 + 0.04;
 }
 
-function getBoardItemY(scale = 1, level = 0) {
-  return getBoardSurfaceY() + level * grid.levelHeight + itemHalfHeight * scale + 0.01;
+function getBoardItemY(item, scale = 1, level = 0) {
+  return getBoardSurfaceY() + level * grid.levelHeight + getItemVisualHeight(item) * scale / 2 + 0.01;
 }
 
 function getTableSurfaceY() {
   return tableRig.y + tableRig.thickness / 2;
 }
 
-function getTableItemY(scale = 1) {
-  return getTableSurfaceY() + itemHalfHeight * scale + 0.01;
+function getTableItemY(item, scale = 1) {
+  return getTableSurfaceY() + getItemVisualHeight(item) * scale / 2 + 0.01;
 }
 
 function initCameraPanel() {
