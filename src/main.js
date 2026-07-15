@@ -163,6 +163,7 @@ const trayGroup = new THREE.Group();
 const itemGroup = new THREE.Group();
 const ghostGroup = new THREE.Group();
 const gridGuideGroup = new THREE.Group();
+const gridHeightGuideGroup = new THREE.Group();
 scene.add(boardGroup, trayGroup, ghostGroup, itemGroup);
 
 const grid = {
@@ -245,8 +246,27 @@ function initBoard() {
   addWall(-grid.left + wallOffset, wallY, 0, wallThickness, grid.wallHeight, grid.depth + 0.14, wallMat);
 
   boardGroup.add(gridGuideGroup);
-  gridGuideGroup.visible = true;
-  const lineMat = new THREE.LineBasicMaterial({ color: '#b86b2d', transparent: true, opacity: 0.82 });
+  gridGuideGroup.add(gridHeightGuideGroup);
+  hideGridGuide();
+  const guideFill = new THREE.Mesh(
+    new THREE.PlaneGeometry(grid.width, grid.depth),
+    new THREE.MeshBasicMaterial({
+      color: '#9ca3af',
+      transparent: true,
+      opacity: 0.16,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    })
+  );
+  guideFill.rotation.x = -Math.PI / 2;
+  guideFill.position.y = 0.072;
+  gridGuideGroup.add(guideFill);
+
+  const lineMat = new THREE.LineBasicMaterial({
+    color: '#6b7280',
+    transparent: true,
+    opacity: 0.82
+  });
   for (let c = 0; c <= grid.cols; c += 1) {
     const x = grid.left + c * grid.cell;
     addLine(x, grid.top, x, grid.top + grid.depth, lineMat);
@@ -255,6 +275,15 @@ function initBoard() {
     const z = grid.top + r * grid.cell;
     addLine(grid.left, z, grid.left + grid.width, z, lineMat);
   }
+  const borderMat = new THREE.LineBasicMaterial({
+    color: '#4b5563',
+    transparent: true,
+    opacity: 0.94
+  });
+  addLine(grid.left, grid.top, grid.left + grid.width, grid.top, borderMat);
+  addLine(grid.left + grid.width, grid.top, grid.left + grid.width, grid.top + grid.depth, borderMat);
+  addLine(grid.left + grid.width, grid.top + grid.depth, grid.left, grid.top + grid.depth, borderMat);
+  addLine(grid.left, grid.top + grid.depth, grid.left, grid.top, borderMat);
 
   tableMesh = new THREE.Mesh(
     new THREE.BoxGeometry(1, 1, 1),
@@ -296,10 +325,52 @@ function addWall(x, y, z, w, h, d, mat) {
 
 function addLine(x1, z1, x2, z2, mat) {
   const geo = new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(x1, 0.075, z1),
-    new THREE.Vector3(x2, 0.075, z2)
+    new THREE.Vector3(x1, 0.095, z1),
+    new THREE.Vector3(x2, 0.095, z2)
   ]);
-  gridGuideGroup.add(new THREE.Line(geo, mat));
+  const line = new THREE.Line(geo, mat);
+  gridGuideGroup.add(line);
+}
+
+function setGridGuideLevel(level = 0) {
+  const guideLevel = THREE.MathUtils.clamp(level, 0, grid.levels - 1);
+  gridGuideGroup.position.y = guideLevel * grid.levelHeight;
+  updateGridHeightGuide(guideLevel);
+}
+
+function updateGridHeightGuide(level) {
+  gridHeightGuideGroup.clear();
+  if (level <= 0) return;
+  const mat = new THREE.LineBasicMaterial({
+    color: '#4b5563',
+    transparent: true,
+    opacity: 0.68
+  });
+  const yTop = 0.095;
+  const yBottom = yTop - level * grid.levelHeight;
+  const corners = [
+    [grid.left, grid.top],
+    [grid.left + grid.width, grid.top],
+    [grid.left + grid.width, grid.top + grid.depth],
+    [grid.left, grid.top + grid.depth]
+  ];
+  for (const [x, z] of corners) {
+    const geo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(x, yTop, z),
+      new THREE.Vector3(x, yBottom, z)
+    ]);
+    const line = new THREE.Line(geo, mat);
+    gridHeightGuideGroup.add(line);
+  }
+}
+
+function showGridGuide(level = 0) {
+  setGridGuideLevel(level);
+  gridGuideGroup.visible = true;
+}
+
+function hideGridGuide() {
+  gridGuideGroup.visible = false;
 }
 
 function initItems() {
@@ -380,13 +451,14 @@ function onPointerDown(event) {
   activeItem.mesh.scale.setScalar(1.06);
   activeItem.mesh.position.y = grid.pickupHeight;
   activeItem.placed = false;
+  setItemShadow(activeItem, false);
   canvas.setPointerCapture(event.pointerId);
   updatePointer(event);
   dragPlane.constant = -grid.pickupHeight;
   raycaster.ray.intersectPlane(dragPlane, hitPoint);
   dragOffset.copy(activeItem.mesh.position).sub(hitPoint);
   dragOffset.y = 0;
-  gridGuideGroup.visible = true;
+  showGridGuide(0);
   updateGhost(null);
 }
 
@@ -398,6 +470,7 @@ function onPointerMove(event) {
   activeItem.mesh.position.x = hitPoint.x + dragOffset.x;
   activeItem.mesh.position.z = hitPoint.z + dragOffset.z;
   candidate = getCandidate(activeItem, activeItem.mesh.position);
+  showGridGuide(candidate?.baseLevel ?? 0);
   updateGhost(candidate);
 }
 
@@ -412,9 +485,11 @@ function onPointerUp(event) {
   } else {
     restoreActiveItem();
   }
+  setItemShadow(activeItem, true);
   if (activeItem.placed) activeItem.mesh.scale.setScalar(1);
   activeItem = null;
   candidate = null;
+  hideGridGuide();
   updateGhost(null);
   refreshStatus();
 }
@@ -512,6 +587,7 @@ function placeItem(item, next) {
   item.mesh.position.copy(gridToWorld(next.gx, next.gy, next.shape));
   item.mesh.position.y = getBoardItemY(1, next.baseLevel);
   item.mesh.scale.setScalar(1);
+  setItemShadow(item, true);
   item.lastValid = { gx: next.gx, gy: next.gy, level: next.baseLevel, rotation: item.rotation };
   layoutTrayQueue();
 }
@@ -529,13 +605,21 @@ function restoreActiveItem() {
     activeItem.mesh.position.copy(gridToWorld(activeItem.gridX, activeItem.gridY, shape));
     activeItem.mesh.position.y = getBoardItemY(1, activeItem.level);
     activeItem.mesh.scale.setScalar(1);
+    setItemShadow(activeItem, true);
     return;
   }
 
   activeItem.mesh.position.copy(activeItem.homePosition);
   activeItem.mesh.position.y = getTableItemY(trayScale);
   activeItem.mesh.scale.setScalar(trayScale);
+  setItemShadow(activeItem, true);
   activeItem.placed = false;
+}
+
+function setItemShadow(item, enabled) {
+  item.mesh.traverse((object) => {
+    if (object.isMesh) object.castShadow = enabled;
+  });
 }
 
 function gridToWorld(gx, gy, shape) {
@@ -551,24 +635,34 @@ function gridToWorld(gx, gy, shape) {
 function updateGhost(next) {
   ghostGroup.clear();
   if (!next?.inside) return;
+  const cols = next.shape[0].length;
+  const rows = next.shape.length;
+  const ghostColor = next.valid ? '#22c55e' : '#ef4444';
   const mat = new THREE.MeshBasicMaterial({
-    color: next.valid ? '#4cd137' : '#ff4757',
+    color: ghostColor,
     transparent: true,
-    opacity: 0.34,
+    opacity: 0.58,
     depthWrite: false
   });
-  for (let y = 0; y < next.shape.length; y += 1) {
-    for (let x = 0; x < next.shape[y].length; x += 1) {
-      if (!next.shape[y][x]) continue;
-      const cell = new THREE.Mesh(new THREE.BoxGeometry(grid.cell * 0.9, 0.035, grid.cell * 0.9), mat);
-      cell.position.set(
-        grid.left + (next.gx + x + 0.5) * grid.cell,
-        getBoardSurfaceY() + next.baseLevel * grid.levelHeight + 0.025,
-        grid.top + (next.gy + y + 0.5) * grid.cell
-      );
-      ghostGroup.add(cell);
-    }
-  }
+  const ghost = new THREE.Mesh(
+    new THREE.BoxGeometry(cols * grid.cell - 0.08, 0.045, rows * grid.cell - 0.08),
+    mat
+  );
+  ghost.position.copy(gridToWorld(next.gx, next.gy, next.shape));
+  ghost.position.y = getBoardSurfaceY() + next.baseLevel * grid.levelHeight + 0.035;
+  ghostGroup.add(ghost);
+
+  const edgeGeo = new THREE.EdgesGeometry(ghost.geometry);
+  const edge = new THREE.LineSegments(
+    edgeGeo,
+    new THREE.LineBasicMaterial({
+      color: ghostColor,
+      transparent: true,
+      opacity: 0.95
+    })
+  );
+  edge.position.copy(ghost.position);
+  ghostGroup.add(edge);
 }
 
 function rotateActiveOrLast() {
@@ -580,6 +674,7 @@ function rotateActiveOrLast() {
 
   if (activeItem) {
     candidate = getCandidate(item, item.mesh.position);
+    showGridGuide(candidate?.baseLevel ?? 0);
     updateGhost(candidate);
     return;
   }
@@ -613,7 +708,7 @@ function resetLevel() {
     item.mesh.scale.setScalar(trayScale);
   }
   layoutTrayQueue();
-  gridGuideGroup.visible = true;
+  hideGridGuide();
   refreshStatus();
 }
 
