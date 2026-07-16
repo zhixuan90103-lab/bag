@@ -1,0 +1,227 @@
+{
+  "results": [
+    {
+      "title": "JSON Map Format",
+      "url": "https://doc.mapeditor.org/en/stable/reference/json-map-format/",
+      "source_type": "tech",
+      "source_site": "doc.mapeditor.org",
+      "author": null,
+      "date": null,
+      "summary": "Official documentation for Tiled map editor's JSON export format used in 2D games. Defines map properties including width, height, tile layers, grid settings, and orientation for level data.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    },
+    {
+      "title": "doughatcher/wachesaw",
+      "url": "https://github.com/doughatcher/wachesaw",
+      "source_type": "tech",
+      "source_site": "github.com",
+      "author": null,
+      "date": null,
+      "summary": "GitHub repo for a chess-like strategy puzzle game with level editor. Includes JSON schema examples for board configuration with width, height, terrain grid arrays for puzzle levels.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    },
+    {
+      "title": "1024 PROMPTS",
+      "url": "https://gist.github.com/VictorTaelin/8a8455e15b9c38c9177cc243e22e047f",
+      "source_type": "tech",
+      "source_site": "github.com",
+      "author": "VictorTaelin",
+      "date": null,
+      "summary": "GitHub Gist discussing puzzle game level design (Pushmo remake). Describes grid-based blocks extending in three dimensions (width, height, depth) for puzzle mechanics and data representation.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    },
+    {
+      "title": "How to render keys and values from JSON into a grid",
+      "url": "https://stackoverflow.com/questions/68788855/how-to-render-keys-and-values-from-json-into-a-grid",
+      "source_type": "community",
+      "source_site": "stackoverflow.com",
+      "author": null,
+      "date": null,
+      "summary": "Stack Overflow question on processing and displaying structured JSON data in a grid layout. Relevant to handling game level or puzzle data formats involving arrays and objects.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    }
+  ],
+  "total": 4,
+  "compatible": 4,
+  "incompatible": 0,
+  "citations": [
+    {
+      "url": "https://gist.github.com/wesbos/19640f6fd516a08569c6b6b569513ec9",
+      "title": "https://gist.github.com/wesbos/19640f6fd516a08569c6b6b569513ec9",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://gist.github.com/VictorTaelin/8a8455e15b9c38c9177cc243e22e047f",
+      "title": "https://gist.github.com/VictorTaelin/8a8455e15b9c38c9177cc243e22e047f",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/JSON",
+      "title": "https://en.wikipedia.org/wiki/JSON",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/GoatTech-42/NEBULA-CDN",
+      "title": "https://github.com/GoatTech-42/NEBULA-CDN",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://huggingface.co/jkorstad/forgedna-hub/blob/main/templates/puzzle.json",
+      "title": "https://huggingface.co/jkorstad/forgedna-hub/blob/main/templates/puzzle.json",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://jsonkit.in/blog/json-in-game-development-save-files",
+      "title": "https://jsonkit.in/blog/json-in-game-development-save-files",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://doc.mapeditor.org/en/stable/reference/json-map-format/",
+      "title": "https://doc.mapeditor.org/en/stable/reference/json-map-format/",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://forum.gamemaker.io/index.php?threads/json-decode-help-solved.35997/",
+      "title": "https://forum.gamemaker.io/index.php?threads/json-decode-help-solved.35997/",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/tinysearch/tinysearch/blob/master/fixtures/index.json",
+      "title": "https://github.com/tinysearch/tinysearch/blob/master/fixtures/index.json",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://juliapackages.com/p/jsonschema",
+      "title": "https://juliapackages.com/p/jsonschema",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/FelineStateMachine/puzzletea/blob/main/llms-full.txt",
+      "title": "https://github.com/FelineStateMachine/puzzletea/blob/main/llms-full.txt",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/KLL535/ComfyUI_Simple_Qwen3-VL-gguf/blob/main/system_prompts.json",
+      "title": "https://github.com/KLL535/ComfyUI_Simple_Qwen3-VL-gguf/blob/main/system_prompts.json",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://stackoverflow.com/questions/68788855/how-to-render-keys-and-values-from-json-into-a-grid",
+      "title": "https://stackoverflow.com/questions/68788855/how-to-render-keys-and-values-from-json-into-a-grid",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://discussions.unity.com/t/json-files/1684873",
+      "title": "https://discussions.unity.com/t/json-files/1684873",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://arxiv.org/html/2509.25922v1",
+      "title": "https://arxiv.org/html/2509.25922v1",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://stackoverflow.com/questions/58730967/json-schema-for-an-unnamed-array",
+      "title": "https://stackoverflow.com/questions/58730967/json-schema-for-an-unnamed-array",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://huggingface.co/jkorstad/forgedna-hub/blame/main/templates/puzzle.json",
+      "title": "https://huggingface.co/jkorstad/forgedna-hub/blame/main/templates/puzzle.json",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.kaggle.com/competitions/arc-prize-2026-arc-agi-3/discussion/698429",
+      "title": "https://www.kaggle.com/competitions/arc-prize-2026-arc-agi-3/discussion/698429",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/ComfyUI-Workflow/awesome-comfyui",
+      "title": "https://github.com/ComfyUI-Workflow/awesome-comfyui",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/doughatcher/wachesaw",
+      "title": "https://github.com/doughatcher/wachesaw",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.reddit.com/r/Supernote/comments/1q8wurp/i_wrote_a_python_script_to_generate_a_perfect/",
+      "title": "https://www.reddit.com/r/Supernote/comments/1q8wurp/i_wrote_a_python_script_to_generate_a_perfect/",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/zlakonis-ctrl/gameivo.github.io/blob/main/fireboy-and-watergirl-forest-temple.html",
+      "title": "https://github.com/zlakonis-ctrl/gameivo.github.io/blob/main/fireboy-and-watergirl-forest-temple.html",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.sciencedirect.com/science/article/pii/S2212420926002815",
+      "title": "https://www.sciencedirect.com/science/article/pii/S2212420926002815",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/PatrickJS/awesome-angular",
+      "title": "https://github.com/PatrickJS/awesome-angular",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.facebook.com/groups/derbyscoreboard/posts/26450947714560317/",
+      "title": "https://www.facebook.com/groups/derbyscoreboard/posts/26450947714560317/",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://papers.ssrn.com/sol3/Delivery.cfm/6499021.pdf?abstractid=6499021&mirid=1",
+      "title": "https://papers.ssrn.com/sol3/Delivery.cfm/6499021.pdf?abstractid=6499021&mirid=1",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://arxiv.org/html/2510.12563v2",
+      "title": "https://arxiv.org/html/2510.12563v2",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.snapframework.com/Resources/HRE1GU/1TW042/pacxon.pdf",
+      "title": "https://www.snapframework.com/Resources/HRE1GU/1TW042/pacxon.pdf",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.reddit.com/r/Unity2D/comments/1s1ut4t/how_do_you_handle_level_configs_in_your_game/",
+      "title": "https://www.reddit.com/r/Unity2D/comments/1s1ut4t/how_do_you_handle_level_configs_in_your_game/",
+      "start_index": 0,
+      "end_index": 0
+    }
+  ]
+}

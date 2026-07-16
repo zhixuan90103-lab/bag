@@ -1,0 +1,233 @@
+{
+  "results": [
+    {
+      "title": "Skipping Cutscenes in Unity",
+      "url": "https://lordkakabel.medium.com/skipping-cutscenes-in-unity-7571c8991e42",
+      "source_type": "tech",
+      "source_site": "medium.com",
+      "author": "Ryan Sweigart",
+      "date": "2021-06-27",
+      "summary": "Details implementation of skippable cutscenes in Unity using Playables and Timeline. Explains code to skip to a specific frame when player input triggers skip.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    },
+    {
+      "title": "Disable Input",
+      "url": "https://github.com/chrismaltby/gb-studio/issues/682",
+      "source_type": "community",
+      "source_site": "github.com",
+      "author": null,
+      "date": "2020-12-02",
+      "summary": "GitHub issue discussing locking standard player controls during cutscenes and dialogue while permitting menu/dialogue interactions in GB Studio.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    },
+    {
+      "title": "Disabling Mouse During a Cutscene Using Unity's Timeline",
+      "url": "https://rusbenguzman.medium.com/nity-26963524c593",
+      "source_type": "tech",
+      "source_site": "medium.com",
+      "author": null,
+      "date": "2022-01-05",
+      "summary": "Tutorial on using Unity Timeline signal tracks to disable and re-enable mouse/player input during intro cutscenes for click-based movement games.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    },
+    {
+      "title": "UE5: Simple Triggered Cutscene Tutorial",
+      "url": "https://medium.com/@fulton_shaun/ue5-simple-triggered-cutscene-tutorial-72285f69e6ac",
+      "source_type": "tech",
+      "source_site": "medium.com",
+      "author": "Shaun Codes",
+      "date": "2026-01-15",
+      "summary": "UE5 tutorial covering player input locking via overlap triggers, CineCamera takeover, and restoring control post-cutscene in a clean sequence system.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    }
+  ],
+  "total": 4,
+  "compatible": 4,
+  "incompatible": 0,
+  "citations": [
+    {
+      "url": "https://www.facebook.com/groups/ue4help/posts/7017303818339342/",
+      "title": "https://www.facebook.com/groups/ue4help/posts/7017303818339342/",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/Ensrick/vermintide-2-tweaker/issues/275",
+      "title": "https://github.com/Ensrick/vermintide-2-tweaker/issues/275",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://adventurecreator.org/forum/discussion/279/skipping-cutscenes",
+      "title": "https://adventurecreator.org/forum/discussion/279/skipping-cutscenes",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://rusbenguzman.medium.com/nity-26963524c593",
+      "title": "https://rusbenguzman.medium.com/nity-26963524c593",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/BLCM/BLCMods/blob/master/Borderlands%202%20mods/FromDarkHell/Quality%20of%20Life/CutsceneDisabler.txt",
+      "title": "https://github.com/BLCM/BLCMods/blob/master/Borderlands%202%20mods/FromDarkHell/Quality%20of%20Life/CutsceneDisabler.txt",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/open-goal/jak-project/issues/2145",
+      "title": "https://github.com/open-goal/jak-project/issues/2145",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://calebjross.com/are-unskippable-cutscenes-a-games-usability-issue/",
+      "title": "https://calebjross.com/are-unskippable-cutscenes-a-games-usability-issue/",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.speedrun.com/forums/speedrunning/131cg",
+      "title": "https://www.speedrun.com/forums/speedrunning/131cg",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/PCSX2/pcsx2_patches/issues/704",
+      "title": "https://github.com/PCSX2/pcsx2_patches/issues/704",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/chrismaltby/gb-studio/issues/707",
+      "title": "https://github.com/chrismaltby/gb-studio/issues/707",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.reddit.com/r/silenthill/comments/v500m2/silent_hill_downpour_skippable_cutscene/",
+      "title": "https://www.reddit.com/r/silenthill/comments/v500m2/silent_hill_downpour_skippable_cutscene/",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.quora.com/How-can-I-make-a-skippable-custom-video-cutscene-before-my-game-starts-in-Unity-2D",
+      "title": "https://www.quora.com/How-can-I-make-a-skippable-custom-video-cutscene-before-my-game-starts-in-Unity-2D",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://acagamic.medium.com/the-7-psychology-principles-game-designers-learn-too-late-b3642a5ea5b9",
+      "title": "https://acagamic.medium.com/the-7-psychology-principles-game-designers-learn-too-late-b3642a5ea5b9",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/chrismaltby/gb-studio/issues/682",
+      "title": "https://github.com/chrismaltby/gb-studio/issues/682",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/Gatohost/cinegato/blob/main/CINEGATO_client.krnk",
+      "title": "https://github.com/Gatohost/cinegato/blob/main/CINEGATO_client.krnk",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://forums.rpgmakerweb.com/threads/how-do-i-implement-a-cutscene-skip.169490/",
+      "title": "https://forums.rpgmakerweb.com/threads/how-do-i-implement-a-cutscene-skip.169490/",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://edmond-wu0895.medium.com/ghost-of-tsushima-review-an-gorgeous-samurai-shinobi-experience-43899e5bf445",
+      "title": "https://edmond-wu0895.medium.com/ghost-of-tsushima-review-an-gorgeous-samurai-shinobi-experience-43899e5bf445",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://steamcommunity.com/app/2000890/discussions/0/4691153988127585224/?l=german",
+      "title": "https://steamcommunity.com/app/2000890/discussions/0/4691153988127585224/?l=german",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://forums.unrealengine.com/t/how-to-make-a-cutscene-play-once/359403",
+      "title": "https://forums.unrealengine.com/t/how-to-make-a-cutscene-play-once/359403",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/Ajarmar/platinum",
+      "title": "https://github.com/Ajarmar/platinum",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://medium.com/geekculture/ready-for-battle-cutscene-using-timeline-and-cinemachine-727272ff72f1",
+      "title": "https://medium.com/geekculture/ready-for-battle-cutscene-using-timeline-and-cinemachine-727272ff72f1",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://medium.com/@austinjy13/cutscenes-in-unity-with-timeline-and-cinemachine-73abae50b68b",
+      "title": "https://medium.com/@austinjy13/cutscenes-in-unity-with-timeline-and-cinemachine-73abae50b68b",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/devshareacademy/monster-tamer/issues/138",
+      "title": "https://github.com/devshareacademy/monster-tamer/issues/138",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/BagelBoy9272/ScriptFixSA/issues/18",
+      "title": "https://github.com/BagelBoy9272/ScriptFixSA/issues/18",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/open-goal/jak-project/issues/386",
+      "title": "https://github.com/open-goal/jak-project/issues/386",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://medium.com/@fulton_shaun/ue5-simple-triggered-cutscene-tutorial-72285f69e6ac",
+      "title": "https://medium.com/@fulton_shaun/ue5-simple-triggered-cutscene-tutorial-72285f69e6ac",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://lordkakabel.medium.com/skipping-cutscenes-in-unity-7571c8991e42",
+      "title": "https://lordkakabel.medium.com/skipping-cutscenes-in-unity-7571c8991e42",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/Ixrec/NineSolsCutsceneSkip",
+      "title": "https://github.com/Ixrec/NineSolsCutsceneSkip",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://discussions.unity.com/t/how-to-disable-input-controls-when-timeline-starts/748019",
+      "title": "https://discussions.unity.com/t/how-to-disable-input-controls-when-timeline-starts/748019",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/erickt420/FFXCutsceneRemover",
+      "title": "https://github.com/erickt420/FFXCutsceneRemover",
+      "start_index": 0,
+      "end_index": 0
+    }
+  ]
+}

@@ -1,0 +1,323 @@
+{
+  "results": [
+    {
+      "title": "dom-overlays/explainer.md",
+      "url": "https://github.com/immersive-web/dom-overlays/blob/main/explainer.md",
+      "source_type": "official",
+      "source_site": "github.com",
+      "author": null,
+      "date": null,
+      "summary": "Official explainer for the DOM Overlays module in WebXR, detailing how to superimpose transparent DOM elements as a layer over WebGL-rendered 3D content for AR experiences like smartphone games with onscreen controls.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    },
+    {
+      "title": "The best approach to use only ThreeJS for building interactive UI without HTML DOM overlays",
+      "url": "https://stackoverflow.com/questions/62735138/the-best-approach-to-use-only-threejs-for-building-interactive-ui-without-html-d",
+      "source_type": "community",
+      "source_site": "stackoverflow.com",
+      "author": null,
+      "date": "2020-07-04",
+      "summary": "Stack Overflow discussion on avoiding HTML DOM overlays for UI in Three.js/WebGL due to potential mobile performance issues, exploring pure 3D UI alternatives like custom meshes or libraries for buttons, text, and 2D layers.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    },
+    {
+      "title": "Canvas vs. DOM vs. WebGL vs. ImpactJS vs. PixiJS Particle Test",
+      "url": "https://github.com/quidmonkey/particle_test",
+      "source_type": "tech",
+      "source_site": "github.com",
+      "author": null,
+      "date": null,
+      "summary": "GitHub repo with performance benchmarks comparing DOM, Canvas 2D, WebGL, and game engines for rendering particles/UI elements, including test files for direct comparison in browser environments.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    },
+    {
+      "title": "60 to 1500 FPS — Optimising a WebGL visualisation",
+      "url": "https://medium.com/@dhiashakiry/60-to-1500-fps-optimising-a-webgl-visualisation-d79705b33af4",
+      "source_type": "tech",
+      "source_site": "medium.com",
+      "author": "Dhia Shakiry",
+      "date": "2025-08-14",
+      "summary": "Medium article on optimizing Three.js/WebGL scenes, discussing use of sprites and 3D elements for UI in 3D space versus other approaches, with mobile performance considerations and frame rate improvements.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    }
+  ],
+  "total": 4,
+  "compatible": 4,
+  "incompatible": 0,
+  "citations": [
+    {
+      "url": "https://github.com/immersive-web/dom-overlays/blob/main/explainer.md",
+      "title": "https://github.com/immersive-web/dom-overlays/blob/main/explainer.md",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.facebook.com/groups/codingquestions/posts/628365934231396/",
+      "title": "https://www.facebook.com/groups/codingquestions/posts/628365934231396/",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://medium.com/@dhiashakiry/60-to-1500-fps-optimising-a-webgl-visualisation-d79705b33af4",
+      "title": "https://medium.com/@dhiashakiry/60-to-1500-fps-optimising-a-webgl-visualisation-d79705b33af4",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://stackoverflow.com/questions/52068814/how-do-i-draw-div-elements-on-top-of-a-three-js-canvas-with-a-transparent-back",
+      "title": "https://stackoverflow.com/questions/52068814/how-do-i-draw-div-elements-on-top-of-a-three-js-canvas-with-a-transparent-back",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://forum.babylonjs.com/t/html-dom-gui-instead-of-babylon-gui/1974",
+      "title": "https://forum.babylonjs.com/t/html-dom-gui-instead-of-babylon-gui/1974",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://javascript.plainenglish.io/pixijs-uniting-dom-and-canvas-with-html-in-canvas-402eb65cc0e4",
+      "title": "https://javascript.plainenglish.io/pixijs-uniting-dom-and-canvas-with-html-in-canvas-402eb65cc0e4",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://stackoverflow.com/questions/62735138/the-best-approach-to-use-only-threejs-for-building-interactive-ui-without-html-d",
+      "title": "https://stackoverflow.com/questions/62735138/the-best-approach-to-use-only-threejs-for-building-interactive-ui-without-html-d",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.youtube.com/watch?v=iMZdNIWygHw",
+      "title": "https://www.youtube.com/watch?v=iMZdNIWygHw",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.reddit.com/r/gamedev/comments/gftumx/dom_vs_canvas_for_2d_games/",
+      "title": "https://www.reddit.com/r/gamedev/comments/gftumx/dom_vs_canvas_for_2d_games/",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://dev.to/logrocket/using-typescript-with-webgl-to-render-graphics-on-the-web-5dpi",
+      "title": "https://dev.to/logrocket/using-typescript-with-webgl-to-render-graphics-on-the-web-5dpi",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://stackoverflow.com/questions/79089243/threejs-and-overlay-in-safari",
+      "title": "https://stackoverflow.com/questions/79089243/threejs-and-overlay-in-safari",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://stackoverflow.com/questions/66236380/need-tooltip-on-mouseover-in-three-js",
+      "title": "https://stackoverflow.com/questions/66236380/need-tooltip-on-mouseover-in-three-js",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://medium.com/@beyons/building-a-high-performance-ui-framework-with-html5-canvas-and-webgl-f7628af8a3c2",
+      "title": "https://medium.com/@beyons/building-a-high-performance-ui-framework-with-html5-canvas-and-webgl-f7628af8a3c2",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.toptal.com/developers/resume/vedran-aberle-tokic",
+      "title": "https://www.toptal.com/developers/resume/vedran-aberle-tokic",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/meta/name/viewport",
+      "title": "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/meta/name/viewport",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://helabenkhalfallah.medium.com/four-ways-the-browser-renders-graphics-four-costs-206c4eec7452",
+      "title": "https://helabenkhalfallah.medium.com/four-ways-the-browser-renders-graphics-four-costs-206c4eec7452",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/quidmonkey/particle_test",
+      "title": "https://github.com/quidmonkey/particle_test",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://gitnation.com/contents/html-in-canvas-bridging-ui-and-gpu-on-the-web",
+      "title": "https://gitnation.com/contents/html-in-canvas-bridging-ui-and-gpu-on-the-web",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://ritik-chopra28.medium.com/how-netflix-renders-2-million-data-points-without-browser-meltdowns-724bf481ef31",
+      "title": "https://ritik-chopra28.medium.com/how-netflix-renders-2-million-data-points-without-browser-meltdowns-724bf481ef31",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/bubkoo/html-to-image/issues/531",
+      "title": "https://github.com/bubkoo/html-to-image/issues/531",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://news.ycombinator.com/item?id=9071465",
+      "title": "https://news.ycombinator.com/item?id=9071465",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.instagram.com/reel/DZKg8AaN7iP/",
+      "title": "https://www.instagram.com/reel/DZKg8AaN7iP/",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://discourse.threejs.org/t/creating-overlay-for-3d-objects-in-dom-layer-in-webxr/21160",
+      "title": "https://discourse.threejs.org/t/creating-overlay-for-3d-objects-in-dom-layer-in-webxr/21160",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://stackoverflow.com/questions/47297794/how-to-overlay-html-text-buttons-on-three-js",
+      "title": "https://stackoverflow.com/questions/47297794/how-to-overlay-html-text-buttons-on-three-js",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://stackoverflow.com/questions/64423333/how-to-place-a-2d-text-layer-over-a-three-js-scene",
+      "title": "https://stackoverflow.com/questions/64423333/how-to-place-a-2d-text-layer-over-a-three-js-scene",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://stackoverflow.com/questions/61507878/how-to-overlay-html-text-buttons-on-webxr-camera-view",
+      "title": "https://stackoverflow.com/questions/61507878/how-to-overlay-html-text-buttons-on-webxr-camera-view",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://communityforums.atmeta.com/discussions/WebXRDevelopment/alternative-to-the-dom-overlays-module-for-displaying-dom-elements-in-an-immsers/1324861",
+      "title": "https://communityforums.atmeta.com/discussions/WebXRDevelopment/alternative-to-the-dom-overlays-module-for-displaying-dom-elements-in-an-immsers/1324861",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://xiuerold.medium.com/pixijs-uniting-dom-and-canvas-with-html-in-canvas-402eb65cc0e4",
+      "title": "https://xiuerold.medium.com/pixijs-uniting-dom-and-canvas-with-html-in-canvas-402eb65cc0e4",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://stackoverflow.com/questions/33959538/display-multiple-instances-of-three-js-in-a-single-page",
+      "title": "https://stackoverflow.com/questions/33959538/display-multiple-instances-of-three-js-in-a-single-page",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://stackoverflow.com/questions/76831297/is-it-possible-to-overlay-a-three-js-3d-render-on-top-of-another",
+      "title": "https://stackoverflow.com/questions/76831297/is-it-possible-to-overlay-a-three-js-3d-render-on-top-of-another",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/beyons/CanvasFramework",
+      "title": "https://github.com/beyons/CanvasFramework",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://medium.com/@akella/taotajima-jp-webgl-deconstruction-af4946e8e8ed",
+      "title": "https://medium.com/@akella/taotajima-jp-webgl-deconstruction-af4946e8e8ed",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.reddit.com/r/godot/comments/1knw0nn/hi_guys_have_you_ever_wanted_to_use_html_for_gui/",
+      "title": "https://www.reddit.com/r/godot/comments/1knw0nn/hi_guys_have_you_ever_wanted_to_use_html_for_gui/",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/mrdoob/three.js/issues/1959",
+      "title": "https://github.com/mrdoob/three.js/issues/1959",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.quora.com/What-are-the-differences-between-WebGL-three-js-CSS-3D-and-D3-js",
+      "title": "https://www.quora.com/What-are-the-differences-between-WebGL-three-js-CSS-3D-and-D3-js",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.reddit.com/r/WebAssembly/comments/b54e34/webdom_now_exposes_webgl_for_all_web_assembly/",
+      "title": "https://www.reddit.com/r/WebAssembly/comments/b54e34/webdom_now_exposes_webgl_for_all_web_assembly/",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://stackoverflow.com/questions/12667507/drawing-ui-elements-directly-to-the-webgl-area-with-three-js",
+      "title": "https://stackoverflow.com/questions/12667507/drawing-ui-elements-directly-to-the-webgl-area-with-three-js",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://gamedev.stackexchange.com/questions/23023/to-canvas-or-not-to-canvas-when-building-browser-based-games",
+      "title": "https://gamedev.stackexchange.com/questions/23023/to-canvas-or-not-to-canvas-when-building-browser-based-games",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://dev.to/georgedoescode/create-a-generative-landing-page-webgl-powered-background-animation-3nl0",
+      "title": "https://dev.to/georgedoescode/create-a-generative-landing-page-webgl-powered-background-animation-3nl0",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://medium.com/@jjmayank98/my-portfolio-is-a-playable-game-and-i-had-no-idea-how-any-of-this-worked-2ae635b432a3",
+      "title": "https://medium.com/@jjmayank98/my-portfolio-is-a-playable-game-and-i-had-no-idea-how-any-of-this-worked-2ae635b432a3",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://medium.com/updates-from-vizor/prototyping-a-360-museum-tour-with-react-vr-1c9b1d3d89bb",
+      "title": "https://medium.com/updates-from-vizor/prototyping-a-360-museum-tour-with-react-vr-1c9b1d3d89bb",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/ChromeDevTools/chrome-devtools-mcp/issues/403",
+      "title": "https://github.com/ChromeDevTools/chrome-devtools-mcp/issues/403",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://franzeus.medium.com/how-i-optimized-my-phaser-3-action-game-in-2025-5a648753f62b",
+      "title": "https://franzeus.medium.com/how-i-optimized-my-phaser-3-action-game-in-2025-5a648753f62b",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://web.dev/case-studies/lightsaber",
+      "title": "https://web.dev/case-studies/lightsaber",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://wikis.khronos.org/webgl/images/WebGL_Ecosystem_and_Overview_DevCon5.pdf",
+      "title": "https://wikis.khronos.org/webgl/images/WebGL_Ecosystem_and_Overview_DevCon5.pdf",
+      "start_index": 0,
+      "end_index": 0
+    }
+  ]
+}

@@ -686,7 +686,11 @@ function getPlacement(item, gx, gy, shape) {
     return { valid: true, baseLevel };
   }
 
-  return { valid: false, baseLevel: getLowestBlockedLevel(voxelGrid, gx, gy, shape) };
+  // 非法时用「意图落脚层」画 ghost/网格，避免红框沉在第 0 层被已放物品遮住
+  return {
+    valid: false,
+    baseLevel: getIntendedBaseLevel(voxelGrid, gx, gy, shape, itemHeight)
+  };
 }
 
 function buildVoxelGrid(exceptItem = null) {
@@ -737,16 +741,36 @@ function hasFullSupport(voxelGrid, gx, gy, baseLevel, shape) {
   return true;
 }
 
-function getLowestBlockedLevel(voxelGrid, gx, gy, shape) {
+/**
+ * 单格从底板往上连续占满的高度（堆顶层数）。
+ * 用于推断玩家正在往哪一层叠。
+ */
+function getColumnStackHeight(voxelGrid, cx, cy) {
+  let height = 0;
   for (let level = 0; level < grid.levels; level += 1) {
-    for (let y = 0; y < shape.length; y += 1) {
-      for (let x = 0; x < shape[y].length; x += 1) {
-        if (!shape[y][x]) continue;
-        if (voxelGrid[level][gy + y][gx + x] !== null) return level;
-      }
+    if (voxelGrid[level][cy][cx] === null) break;
+    height += 1;
+  }
+  return height;
+}
+
+/**
+ * 非法放置时的展示层（方案 A）：
+ * footprint 下各格堆高取 max —— 玩家通常对准最高支撑面去叠；
+ * 再夹紧到物品仍能放进箱高的最大 baseLevel。
+ * 例：部分格 stack=1、缺口 stack=0 时，红框画在第 1 层表面，而不是箱底。
+ */
+function getIntendedBaseLevel(voxelGrid, gx, gy, shape, itemHeight) {
+  let maxStack = 0;
+  for (let y = 0; y < shape.length; y += 1) {
+    for (let x = 0; x < shape[y].length; x += 1) {
+      if (!shape[y][x]) continue;
+      maxStack = Math.max(maxStack, getColumnStackHeight(voxelGrid, gx + x, gy + y));
     }
   }
-  return 0;
+
+  const maxBaseLevel = Math.max(0, grid.levels - itemHeight);
+  return Math.min(maxStack, maxBaseLevel);
 }
 
 function getItemHeight(item) {

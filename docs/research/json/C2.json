@@ -1,0 +1,113 @@
+{
+  "results": [
+    {
+      "title": "GitHub - just-animate/just-curves: A library of reusable easing functions",
+      "url": "https://github.com/just-animate/just-curves",
+      "source_type": "tech",
+      "source_site": "github.com",
+      "author": null,
+      "date": null,
+      "summary": "A TypeScript library providing reusable easing functions for animations and tweening, including easeOutCubic, easeInCubic, and many others based on standard curves. Supports both JS usage and CSS timing functions, compatible with popular animation libraries like AnimeJS and Popmotion. Includes documentation and code examples for cubic-bezier and common easing types used in game and UI animations.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    },
+    {
+      "title": "Tweening with Style: A Simple Guide to Easing in Turbo Game Engine",
+      "url": "https://medium.com/@OmolewaAbraham/tweening-with-style-a-simple-guide-to-easing-in-turbo-game-engine-78ee420bb93e",
+      "source_type": "tech",
+      "source_site": "medium.com",
+      "author": "Omolewa Abraham",
+      "date": null,
+      "summary": "Explains easing functions in the context of Turbo game engine animations, including EaseOutCubic and other cubic/quadratic variants for tweening game elements. Covers how easing controls animation feel (e.g., start fast then slow down) with code examples for Tween usage in Rust-based game development. References standard easing graphs and lists multiple easing types like EaseOutQuad, EaseOutQuint for game UI and object movements.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    },
+    {
+      "title": "jQuery.easing - easeOutCubic - emphasizing on the ease",
+      "url": "https://stackoverflow.com/questions/7748617/jquery-easing-easeoutcubic-emphasizing-on-the-ease",
+      "source_type": "community",
+      "source_site": "stackoverflow.com",
+      "author": "Sparky",
+      "date": "2011-10-13",
+      "summary": "Discusses customizing the easeOutCubic function from Robert Penner's easing library (commonly used in games and animations) to adjust the curve intensity. Provides the exact mathematical implementation of easeOutCubic and examples of modifying it or using steeper variants like easeOutExpo for stronger 'ease out' effects in jQuery animations. Includes demos and comparisons of cubic easing curves for timing and game-like motion.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    },
+    {
+      "title": "easing functions for bell curves?",
+      "url": "https://stackoverflow.com/questions/13097005/easing-functions-for-bell-curves",
+      "source_type": "community",
+      "source_site": "stackoverflow.com",
+      "author": null,
+      "date": null,
+      "summary": "Explores Robert Penner's classic easing functions (including easeOutCubic) for creating smooth animation curves in programming and games. Discusses mathematical implementations to achieve specific behaviors like bell-shaped or custom acceleration/deceleration curves beyond standard linear or cubic options. Relevant for game developers seeking precise control over animation timing and motion paths.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    }
+  ],
+  "total": 4,
+  "compatible": 4,
+  "incompatible": 0,
+  "citations": [
+    {
+      "url": "https://medium.com/@OmolewaAbraham/tweening-with-style-a-simple-guide-to-easing-in-turbo-game-engine-78ee420bb93e",
+      "title": "https://medium.com/@OmolewaAbraham/tweening-with-style-a-simple-guide-to-easing-in-turbo-game-engine-78ee420bb93e",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://stackoverflow.com/questions/5161465/how-to-create-custom-easing-function-with-core-animation",
+      "title": "https://stackoverflow.com/questions/5161465/how-to-create-custom-easing-function-with-core-animation",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://stackoverflow.com/questions/7748617/jquery-easing-easeoutcubic-emphasizing-on-the-ease",
+      "title": "https://stackoverflow.com/questions/7748617/jquery-easing-easeoutcubic-emphasizing-on-the-ease",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://medium.com/@ryan_brownhill/crafting-easing-curves-for-user-interfaces-34f39e1b4a43",
+      "title": "https://medium.com/@ryan_brownhill/crafting-easing-curves-for-user-interfaces-34f39e1b4a43",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://stackoverflow.com/questions/13097005/easing-functions-for-bell-curves",
+      "title": "https://stackoverflow.com/questions/13097005/easing-functions-for-bell-curves",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://gist.github.com/sebtoun/2bedab3d65408f6c87e7adafe5d43f5e",
+      "title": "https://gist.github.com/sebtoun/2bedab3d65408f6c87e7adafe5d43f5e",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://stackoverflow.com/questions/58330606/what-are-the-default-css-easing-curves",
+      "title": "https://stackoverflow.com/questions/58330606/what-are-the-default-css-easing-curves",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/just-animate/just-curves",
+      "title": "https://github.com/just-animate/just-curves",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://medium.com/androiddevelopers/easing-in-to-easing-curves-in-jetpack-compose-d72893eeeb4d",
+      "title": "https://medium.com/androiddevelopers/easing-in-to-easing-curves-in-jetpack-compose-d72893eeeb4d",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://medium.com/hackernoon/ease-out-the-half-sigmoid-7240df433d98",
+      "title": "https://medium.com/hackernoon/ease-out-the-half-sigmoid-7240df433d98",
+      "start_index": 0,
+      "end_index": 0
+    }
+  ]
+}

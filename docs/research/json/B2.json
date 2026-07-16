@@ -1,0 +1,173 @@
+{
+  "results": [
+    {
+      "title": "How to Fit Camera to Object",
+      "url": "https://stackoverflow.com/questions/14614252/how-to-fit-camera-to-object",
+      "source_type": "community",
+      "source_site": "stackoverflow.com",
+      "author": null,
+      "date": "2013-01-30",
+      "summary": "Discusses fitting a Three.js camera to an object using bounding boxes (AABB). Provides code examples for positioning the camera based on object size and aspect ratio considerations.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    },
+    {
+      "title": "THREE.js fit Orthographic camera to scene",
+      "url": "https://stackoverflow.com/questions/31978368/three-js-fit-orthographic-camera-to-scene",
+      "source_type": "community",
+      "source_site": "stackoverflow.com",
+      "author": null,
+      "date": "2015-08-13",
+      "summary": "Explains how to fit an orthographic camera in Three.js to a mesh or scene using bounding box calculations. Includes code for adjusting zoom and centering based on object dimensions.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    },
+    {
+      "title": "\"Fit all\" (show all) feature",
+      "url": "https://github.com/mrdoob/three.js/issues/6784",
+      "source_type": "community",
+      "source_site": "github.com",
+      "author": null,
+      "date": "2015-07-03",
+      "summary": "GitHub issue requesting a 'fit all' feature for cameras in Three.js to automatically frame objects or scenes. Discusses bounding box approaches and camera positioning algorithms.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    },
+    {
+      "title": "Cracking the three.js object fitting (to camera) nut",
+      "url": "https://wejn.org/2020/12/cracking-the-threejs-object-fitting-nut/",
+      "source_type": "tech",
+      "source_site": "wejn.org",
+      "author": null,
+      "date": "2020-12-27",
+      "summary": "Detailed technical article on fitting objects to a perspective camera in Three.js using bounding boxes. Provides a complete function with math for handling different sizes, FOV, and aspect ratios.",
+      "notebooklm_compatible": true,
+      "compatibility_issue": null
+    }
+  ],
+  "total": 4,
+  "compatible": 4,
+  "incompatible": 0,
+  "citations": [
+    {
+      "url": "https://dustinpfister.github.io/2021/05/11/threejs-object3d-scale/",
+      "title": "https://dustinpfister.github.io/2021/05/11/threejs-object3d-scale/",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/vasturiano/three-render-objects",
+      "title": "https://github.com/vasturiano/three-render-objects",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://discourse.threejs.org/t/camera-zoom-to-fit-object/936?page=2",
+      "title": "https://discourse.threejs.org/t/camera-zoom-to-fit-object/936?page=2",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "http://codesandbox.io/p/github/tjt740/-react-three.js-",
+      "title": "http://codesandbox.io/p/github/tjt740/-react-three.js-",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://discourse.threejs.org/t/how-can-i-fit-a-3d-model-within-the-bounding-area-of-an-orthographic-camera/56734",
+      "title": "https://discourse.threejs.org/t/how-can-i-fit-a-3d-model-within-the-bounding-area-of-an-orthographic-camera/56734",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.wp3dprinting.com/changelog/",
+      "title": "https://www.wp3dprinting.com/changelog/",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://stackoverflow.com/questions/31978368/three-js-fit-orthographic-camera-to-scene",
+      "title": "https://stackoverflow.com/questions/31978368/three-js-fit-orthographic-camera-to-scene",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://stackoverflow.com/questions/14614252/how-to-fit-camera-to-object",
+      "title": "https://stackoverflow.com/questions/14614252/how-to-fit-camera-to-object",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/pmndrs/react-three-fiber/issues/67",
+      "title": "https://github.com/pmndrs/react-three-fiber/issues/67",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://spawn.co/s/release-5-0-0",
+      "title": "https://spawn.co/s/release-5-0-0",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.youtube.com/watch?v=2JB5qXVaxPI",
+      "title": "https://www.youtube.com/watch?v=2JB5qXVaxPI",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://discourse.threejs.org/t/positioning-camera-according-to-size-of-the-object/38309",
+      "title": "https://discourse.threejs.org/t/positioning-camera-according-to-size-of-the-object/38309",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://discourse.threejs.org/t/camera-zoom-to-fit-object/936",
+      "title": "https://discourse.threejs.org/t/camera-zoom-to-fit-object/936",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://github.com/mrdoob/three.js/issues/6784",
+      "title": "https://github.com/mrdoob/three.js/issues/6784",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://www.spawn.co/s",
+      "title": "https://www.spawn.co/s",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://vavist.com/guides/fit-camera-to-object-three-js/",
+      "title": "https://vavist.com/guides/fit-camera-to-object-three-js/",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://discourse.threejs.org/t/how-can-i-place-camera-to-show-all-objects/35226",
+      "title": "https://discourse.threejs.org/t/how-can-i-place-camera-to-show-all-objects/35226",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://source.opennews.org/articles/resurrecting-dragon/",
+      "title": "https://source.opennews.org/articles/resurrecting-dragon/",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://wejn.org/2020/12/cracking-the-threejs-object-fitting-nut/",
+      "title": "https://wejn.org/2020/12/cracking-the-threejs-object-fitting-nut/",
+      "start_index": 0,
+      "end_index": 0
+    },
+    {
+      "url": "https://discourse.threejs.org/t/fit-projected-perceived-bounds-of-mesh-into-viewport/65890",
+      "title": "https://discourse.threejs.org/t/fit-projected-perceived-bounds-of-mesh-into-viewport/65890",
+      "start_index": 0,
+      "end_index": 0
+    }
+  ]
+}

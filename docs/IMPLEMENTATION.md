@@ -785,7 +785,8 @@ rotateBtn.addEventListener('click', rotateActiveOrLast);
 - `buildVoxelGrid()`
 - `isVoxelSpaceEmpty()`
 - `hasFullSupport()`
-- `getLowestBlockedLevel()`
+- `getColumnStackHeight()`
+- `getIntendedBaseLevel()`（非法放置时的展示层，见下）
 
 ### 体素网格结构
 
@@ -830,7 +831,38 @@ if (item === exceptItem || !item.placed) continue;
 3. 调用 `isVoxelSpaceEmpty()` 检查目标空间是否为空。
 4. 调用 `hasFullSupport()` 检查完整支撑。
 5. 第一个合法层级返回 `{ valid: true, baseLevel }`。
-6. 全部失败返回 `{ valid: false, baseLevel: getLowestBlockedLevel(...) }`。
+6. 全部失败返回 `{ valid: false, baseLevel: getIntendedBaseLevel(...) }`。
+
+### 非法放置的展示层（方案 A · 意图落脚层）
+
+合法时的 `baseLevel` 是真正可落的层级。  
+**非法时的 `baseLevel` 只用于 UI**（红 ghost、网格引导高度），不影响能否放置。
+
+旧实现使用 `getLowestBlockedLevel()`：找 footprint 内**最先碰到已有体素的层**。在「想叠到上层、但下方有缺口」时，往往返回 `0`，红框画在箱底，被已放物品遮住，玩家误以为是碰撞而非悬空。
+
+当前改为 `getIntendedBaseLevel()`：
+
+1. 对 footprint 每一格用 `getColumnStackHeight()` 计算从底板往上**连续占满的堆高**。
+2. 取各格堆高的 **`max`**，作为玩家意图对准的支撑面。
+3. 再夹紧到 `min(maxStack, grid.levels - itemHeight)`，避免越顶。
+
+典型场景：
+
+- 部分格堆高 `1`、缺口格堆高 `0`（完整支撑失败）→ 非法 `baseLevel = 1`，红框画在第 1 层表面。
+- 全空非法（极少见）→ `baseLevel = 0`。
+- 堆已顶到箱顶附近 → 夹紧后不超过可放上限。
+
+相关代码：
+
+```js
+function getColumnStackHeight(voxelGrid, cx, cy) { /* 连续 stack 高度 */ }
+
+function getIntendedBaseLevel(voxelGrid, gx, gy, shape, itemHeight) {
+  // max(stack) under footprint, clamped to levels - itemHeight
+}
+```
+
+**未做**（曾尝试后回滚）：多层动态投射平面（拖拽射线平面随层变化）。当前拖拽仍固定 `pickupHeight`；仅非法 ghost/网格用意图层高度。
 
 ### 完整支撑规则
 
@@ -886,6 +918,11 @@ ghost.position.y = getBoardSurfaceY() + next.baseLevel * grid.levelHeight + 0.03
 ```
 
 也就是说 ghost 是平面，但会出现在对应层级。
+
+- **合法**：`baseLevel` 为真实可放层。
+- **非法**：`baseLevel` 为意图落脚层（`getIntendedBaseLevel`），避免红框沉在第 0 层被遮挡。
+
+网格引导 `showGridGuide(candidate?.baseLevel ?? 0)` 与 ghost 共用同一 `baseLevel`，非法时网格也会抬到意图层。
 
 边框：
 
@@ -1665,10 +1702,11 @@ bf62d6a Expand shadow camera bounds
 2. 给 `levels.js` 增加多关卡数据，而不是继续只改当前关。
 3. 增加关卡切换和当前关卡索引。
 4. 决定是否保留“最后一块自动旋转”。
-5. 给失败原因增加更明确反馈，例如“悬空”“碰撞”“越界”。
-6. 视实际测试决定是否改多层动态投射平面。
-7. 性能压测移动端，必要时优化圆角和阴影。
-8. 将抽象彩色积木逐步替换为低 poly 生活物品。
+5. 给失败原因增加更明确反馈，例如“悬空”“碰撞”“越界”（文案 / Toast）；可选方案 B 按格标缺口。
+6. 多层动态投射平面：已试做后回滚，维持固定 `pickupHeight`；若以后再做，勿改拖拽物高度、只改瞄准平面或网格。
+7. 非法 ghost 遮挡：若意图层仍被侧面挡住，可考虑 `depthTest: false`（方案 C）。
+8. 性能压测移动端，必要时优化圆角和阴影。
+9. 将抽象彩色积木逐步替换为低 poly 生活物品。
 
 ## 31. 快速验证清单
 
@@ -1681,6 +1719,7 @@ bf62d6a Expand shadow camera bounds
 - 手动拖动物品能拿起、移动、放下。
 - 合法位置显示绿色平面。
 - 非法位置显示红色平面。
+- **上层悬空非法时，红框与网格在意图落脚层（非箱底被挡死）。**
 - 2x2x2 BOX 视觉高度正确。
 - 2x2x2 BOX 占用两层高度。
 - 上层放置必须完整支撑。
@@ -1691,3 +1730,10 @@ bf62d6a Expand shadow camera bounds
 - 旋转按钮仍能旋转物品。
 - 移动端横屏会出现竖屏提示。
 - PC 调参面板仍可用。
+
+## 32. 变更记录（相对文档初版）
+
+| 日期 | 变更 | 说明 |
+|------|------|------|
+| 2026-07-16 | 非法 ghost 意图落脚层（方案 A） | 用 `getIntendedBaseLevel` / `getColumnStackHeight` 替代 `getLowestBlockedLevel` 作为非法 `baseLevel`；合法规则不变。 |
+| 2026-07-16 | 动态投射平面回滚 | 曾试多层动态平面 + 拖拽物随层升降；手感不佳后完整回滚，拖拽仍固定 `pickupHeight`。 |
