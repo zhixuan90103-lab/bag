@@ -19,17 +19,23 @@ const trayEntryOffsetX = 1.15;
 const trayLerpAlpha = 0.18;
 const rotationLerpAlpha = 0.12;
 /**
- * 意图自动转角：大箱更保守（少惊吓 > 少点击）。
- * 分档由 getAutoRotateAssistProfile() 按底盘/层数决定。
+ * 意图自动转角 v2 主路径：
+ * ① 目标区域 R（指附近邻域）→ ② R 上可放朝向 → ③ 瞄准确认后帮转。
+ * 贴边/方向只作轻消歧；分档只调灵敏度。少惊吓 > 少点击。
  */
 const manualLockMs = 800;
+/** 帮转后短时不反拧（区域跨缝时的防抖）；唯一可放 / 刷边 / 最后一块可覆盖 */
+const assistCommitLockMs = 900;
 const autoRotateDistWeight = 3;
 const autoRotateFinalBonus = 0.45;
 const autoRotateStepPenalty = 0.4;
-const autoRotateTrendBonus = 0.35;
-/** 速度阈值（格/秒）：低于=悬停；低于瞄准上限=慢速瞄准；更高=快甩路过 */
-const autoRotateHoverSpeedCells = 0.85;
-const autoRotateAimSpeedCells = 2.4;
+/** 多朝向消歧：移动方向加分（不单独触发） */
+const autoRotateMotionDirBonus = 0.38;
+const autoRotateMotionConfidenceMin = 0.72;
+/** 速度：悬停 / 慢瞄 / 方向消歧上限（格/秒） */
+const autoRotateHoverSpeedCells = 0.75;
+const autoRotateAimSpeedCells = 1.5;
+const autoRotateMotionDirMaxSpeedCells = 1.15;
 const autoRotateTrailMs = 420;
 const autoRotateTrailMax = 18;
 
@@ -53,17 +59,18 @@ function getAutoRotateAssistProfile() {
       cooldownMs: 520,
       maxSnapCells: 0.55,
       hoverMaxSnapCells: 0.7,
+      /** 目标区域 R 半径（格）；大箱收紧防空旷层乱转 */
+      regionRadiusCells: 1.05,
       scoreMargin: 0.55,
       hoverScoreMargin: 0.5,
       insidePad: 1.0,
       edgeBand: 0.24,
-      edgeBonus: 0.55,
-      /** 需瞄准态：悬停 / 慢速 / 靠边刷边；快甩仍不转 */
+      edgeBonus: 0.35,
       requireAiming: true,
-      uniqueSkipsMargin: false,
       dwellHoverScale: 0.88,
       dwellScrubScale: 0.72,
-      useLongKicks: false
+      useLongKicks: false,
+      motionDirWeight: 0.45
     };
   }
 
@@ -74,36 +81,38 @@ function getAutoRotateAssistProfile() {
       cooldownMs: 460,
       maxSnapCells: 0.65,
       hoverMaxSnapCells: 0.85,
+      regionRadiusCells: 1.25,
       scoreMargin: 0.5,
       hoverScoreMargin: 0.42,
       insidePad: 1.15,
       edgeBand: 0.28,
-      edgeBonus: 0.65,
+      edgeBonus: 0.4,
       requireAiming: true,
-      uniqueSkipsMargin: false,
       dwellHoverScale: 0.85,
       dwellScrubScale: 0.68,
-      useLongKicks: true
+      useLongKicks: true,
+      motionDirWeight: 0.7
     };
   }
 
-  // small：2×2 / 小底盘仍可稍热心
+  // small：偏稳
   return {
     tier,
-    dwellMs: 260,
-    cooldownMs: 380,
-    maxSnapCells: 0.78,
-    hoverMaxSnapCells: 1.0,
-    scoreMargin: 0.42,
-    hoverScoreMargin: 0.3,
-    insidePad: 1.25,
-    edgeBand: 0.36,
-    edgeBonus: 0.75,
-    requireAiming: false,
-    uniqueSkipsMargin: true,
-    dwellHoverScale: 0.78,
-    dwellScrubScale: 0.65,
-    useLongKicks: true
+    dwellMs: 320,
+    cooldownMs: 450,
+    maxSnapCells: 0.68,
+    hoverMaxSnapCells: 0.82,
+    regionRadiusCells: 1.15,
+    scoreMargin: 0.5,
+    hoverScoreMargin: 0.45,
+    insidePad: 1.1,
+    edgeBand: 0.2,
+    edgeBonus: 0.28,
+    requireAiming: true,
+    dwellHoverScale: 0.92,
+    dwellScrubScale: 0.8,
+    useLongKicks: true,
+    motionDirWeight: 0.4
   };
 }
 /** 有序 kick 偏移（相对 snap 格）；长条额外 ±2 */
@@ -1454,6 +1463,8 @@ function beginDragItem(item, event) {
   activeItem.autoRotateIntentKey = null;
   activeItem.autoRotateIntentSince = 0;
   activeItem.manualLockUntil = 0;
+  activeItem.assistCommitUntil = 0;
+  activeItem.assistCommitRotation = null;
   activeItem.dragTrail = [];
   activeItem.previousPlacement = activeItem.placed
     ? { gx: activeItem.gridX, gy: activeItem.gridY, level: activeItem.level, rotation: activeItem.rotation }
@@ -1598,22 +1609,27 @@ function isNearBoxForIntent(worldPosition, pad = 1.1) {
 }
 
 /**
- * 互异脚印朝向：同一 shape 矩阵只保留距当前角步数最少的 rotation。
- * 避免 2×1 的 90°/270° 同分并列导致 margin 卡死、永远不转。
+ * 互异脚印朝向（含当前）：同一 shape 矩阵只保留距当前角步数最少的 rotation。
+ * v2 区域分析需要统计「当前脚印在 R 内是否也能放」。
  */
-function getDistinctRotationOptions(item) {
+function getDistinctRotationOptions(item, { includeCurrent = true } = {}) {
   const currentKey = shapeMatrixKey(rotateShape(item.shape, item.rotation));
   const byShape = new Map();
 
   for (let rotation = 0; rotation < 4; rotation += 1) {
-    if (rotation === item.rotation) continue;
     const shape = rotateShape(item.shape, rotation);
     const key = shapeMatrixKey(shape);
-    if (key === currentKey) continue;
+    if (!includeCurrent && key === currentKey) continue;
     const steps = minRotationSteps(item.rotation, rotation);
     const prev = byShape.get(key);
     if (!prev || steps < prev.steps) {
-      byShape.set(key, { rotation, shape, steps, key });
+      byShape.set(key, {
+        rotation,
+        shape,
+        steps,
+        key,
+        isCurrent: key === currentKey
+      });
     }
   }
 
@@ -1692,11 +1708,124 @@ function detectEdgeScrub(item, edgeBand) {
 }
 
 /**
+ * 稳定移动方向（分段加权，近端更重）：
+ * - stableAxis：'x' 左右 / 'z' 上下
+ * - confidence：主轴占比 0.5~1
+ * - approachAxis：往哪类边拱（左/右→偏好竖放 z；上/下→偏好横放 x）
+ * 仅用于瞄准态下「选朝向」，不单独触发转角。
+ */
+function getStableMotionHint(item) {
+  const trail = item.dragTrail;
+  if (!trail || trail.length < 3) {
+    return { stableAxis: null, confidence: 0, approachAxis: null };
+  }
+
+  let sumAbsX = 0;
+  let sumAbsZ = 0;
+  let sumDx = 0;
+  let sumDz = 0;
+  for (let i = 1; i < trail.length; i += 1) {
+    const w = 0.55 + (i / trail.length);
+    const ddx = trail[i].x - trail[i - 1].x;
+    const ddz = trail[i].z - trail[i - 1].z;
+    sumAbsX += Math.abs(ddx) * w;
+    sumAbsZ += Math.abs(ddz) * w;
+    sumDx += ddx * w;
+    sumDz += ddz * w;
+  }
+
+  const total = sumAbsX + sumAbsZ;
+  if (total < grid.cell * 0.1) {
+    return { stableAxis: null, confidence: 0, approachAxis: null };
+  }
+
+  const stableAxis = sumAbsX >= sumAbsZ ? 'x' : 'z';
+  const confidence = Math.max(sumAbsX, sumAbsZ) / total;
+
+  const latest = trail[trail.length - 1];
+  const u = (latest.x - grid.left) / Math.max(grid.width, 1e-6);
+  const v = (latest.z - grid.top) / Math.max(grid.depth, 1e-6);
+  let approachAxis = null;
+  if (Math.abs(sumDx) >= Math.abs(sumDz) * 0.9) {
+    // 往左/右拱 → 更像要竖贴侧边
+    if (sumDx < 0 && u < 0.62) approachAxis = 'z';
+    else if (sumDx > 0 && u > 0.38) approachAxis = 'z';
+  } else {
+    // 往上/下拱 → 更像要横贴顶底
+    if (sumDz < 0 && v < 0.62) approachAxis = 'x';
+    else if (sumDz > 0 && v > 0.38) approachAxis = 'x';
+  }
+
+  return { stableAxis, confidence, approachAxis };
+}
+
+/**
+ * 纵向入箱手势（看玩家操作方向，不是只看贴哪条几何边）：
+ * 坐标系：z 增大 = 靠箱底/托盘侧。
+ * - dragUpIntoBox：从下往上（路过底边入箱）→ 帮转应迟钝（必经之路）
+ * - dragDownFromTop：从上往下 → 可更及时
+ */
+function getVerticalEntryGesture(item, worldPosition) {
+  const trail = item.dragTrail;
+  const v = (worldPosition.z - grid.top) / Math.max(grid.depth, 1e-6);
+  // 箱底半区 + 略出底边：托盘拖入会经过
+  const nearBottomEntry = v > 0.52 || worldPosition.z > grid.top + grid.depth - grid.cell * 0.35;
+
+  if (!trail || trail.length < 3) {
+    return {
+      dragUpIntoBox: false,
+      dragDownFromTop: false,
+      nearBottomEntry,
+      verticalConfidence: 0
+    };
+  }
+
+  let sumAbsX = 0;
+  let sumAbsZ = 0;
+  let sumDz = 0;
+  for (let i = 1; i < trail.length; i += 1) {
+    const w = 0.55 + (i / trail.length);
+    const ddx = trail[i].x - trail[i - 1].x;
+    const ddz = trail[i].z - trail[i - 1].z;
+    sumAbsX += Math.abs(ddx) * w;
+    sumAbsZ += Math.abs(ddz) * w;
+    sumDz += ddz * w;
+  }
+  const total = sumAbsX + sumAbsZ;
+  if (total < grid.cell * 0.12) {
+    return {
+      dragUpIntoBox: false,
+      dragDownFromTop: false,
+      nearBottomEntry,
+      verticalConfidence: 0
+    };
+  }
+
+  const verticalConfidence = sumAbsZ / total;
+  // 主移为上下，且纵向位移够明显
+  const verticalDominant = sumAbsZ >= sumAbsX * 0.85
+    && Math.abs(sumDz) > grid.cell * 0.14;
+  // dz<0：往箱顶（屏幕上方/离托盘）= 从下往上入箱
+  const dragUpIntoBox = verticalDominant && sumDz < 0 && verticalConfidence >= 0.52;
+  // dz>0：往箱底 = 从上往下
+  const dragDownFromTop = verticalDominant && sumDz > 0 && verticalConfidence >= 0.52;
+
+  return {
+    dragUpIntoBox,
+    dragDownFromTop,
+    nearBottomEntry,
+    verticalConfidence
+  };
+}
+
+/**
  * 拖拽趋势：
  * - hovering：几乎停住
  * - aiming：慢速对准（不必死停）
  * - edgeScrub：靠边来回/上下刷
  * - allowAssist：可参与自动转（非快甩）
+ * - stableAxis / motionConfidence / approachAxis：移动方向消歧
+ * - dragUpIntoBox / dragDownFromTop：纵向入箱手势
  */
 function getDragTrend(item, edgeBand = 0.28) {
   const trail = item.dragTrail;
@@ -1710,7 +1839,13 @@ function getDragTrend(item, edgeBand = 0.28) {
       edgeScrub: false,
       scrubAxis: null,
       allowAssist: true,
-      axis: null
+      axis: null,
+      stableAxis: null,
+      motionConfidence: 0,
+      approachAxis: null,
+      dragUpIntoBox: false,
+      dragDownFromTop: false,
+      nearBottomEntry: false
     };
   }
   const a = trail[0];
@@ -1727,17 +1862,29 @@ function getDragTrend(item, edgeBand = 0.28) {
     axis = Math.abs(dx) >= Math.abs(dz) ? 'x' : 'z';
   }
   const scrub = detectEdgeScrub(item, edgeBand);
-  const allowAssist = hovering || aiming || scrub.scrubbing;
+  const motion = getStableMotionHint(item);
+  const entry = getVerticalEntryGesture(item, { x: b.x, z: b.z });
+  // 从下往上路过底边：不把「贴底刷边」当成强瞄准，减少误转
+  const edgeScrub = entry.dragUpIntoBox && entry.nearBottomEntry
+    ? false
+    : scrub.scrubbing;
+  const allowAssist = hovering || aiming || edgeScrub;
   return {
     speedCells,
     dx,
     dz,
     hovering,
     aiming,
-    edgeScrub: scrub.scrubbing,
-    scrubAxis: scrub.preferredLongAxis,
+    edgeScrub,
+    scrubAxis: edgeScrub ? scrub.preferredLongAxis : null,
     allowAssist,
-    axis
+    axis: motion.stableAxis || axis,
+    stableAxis: motion.stableAxis || axis,
+    motionConfidence: motion.confidence,
+    approachAxis: motion.approachAxis,
+    dragUpIntoBox: entry.dragUpIntoBox,
+    dragDownFromTop: entry.dragDownFromTop,
+    nearBottomEntry: entry.nearBottomEntry
   };
 }
 
@@ -1778,6 +1925,50 @@ function shapeLongAxis(shape) {
   return cols > rows ? 'x' : 'z';
 }
 
+/**
+ * 四边区域：left/right/top/bottom（箱体 0~1 归一化）。
+ * band 越小越贴边。
+ */
+function getEdgeSide(worldPosition, edgeBand = 0.28) {
+  const u = (worldPosition.x - grid.left) / Math.max(grid.width, 1e-6);
+  const v = (worldPosition.z - grid.top) / Math.max(grid.depth, 1e-6);
+  const dLeft = u;
+  const dRight = 1 - u;
+  const dTop = v;
+  const dBottom = 1 - v;
+  const minD = Math.min(dLeft, dRight, dTop, dBottom);
+  if (minD > edgeBand) return null;
+  if (minD === dLeft) return 'left';
+  if (minD === dRight) return 'right';
+  if (minD === dTop) return 'top';
+  return 'bottom';
+}
+
+/**
+ * 「拧着贴边」强意图：
+ * - 横条(长轴 x) 到左/右边 → 想竖过来 (z)
+ * - 竖条(长轴 z) 到上/下边 → 想横过来 (x)
+ * 已经顺边则 mismatched=false（不要乱转）。
+ */
+function getMismatchEdgeIntent(item, worldPosition, edgeBand = 0.28) {
+  const side = getEdgeSide(worldPosition, edgeBand);
+  if (!side) return null;
+
+  const curLong = shapeLongAxis(rotateShape(item.shape, item.rotation));
+  if (!curLong) return null; // 正方形无横竖
+
+  const sideIsVertical = side === 'left' || side === 'right';
+  const preferredLongAxis = sideIsVertical ? 'z' : 'x';
+  const mismatched = curLong !== preferredLongAxis;
+
+  return {
+    side,
+    preferredLongAxis,
+    mismatched,
+    currentLongAxis: curLong
+  };
+}
+
 /** 提交前再验一次：旋转后必须合法可放，否则不转 */
 function isPlacementStillValid(item, candidate) {
   if (!candidate?.shape || candidate.gx == null || candidate.gy == null) return false;
@@ -1809,7 +2000,7 @@ function autoRotateSnapLimitCells(baseCells, shape) {
   return baseCells + Math.max(0, span - 1) * 0.18;
 }
 
-/** 脚印格数 / 跨度：4×2 等大件要更钝 */
+/** 脚印格数 / 跨度：4×2 等大件要更钝（最后一块会放宽） */
 function getItemFootprintBulk(item) {
   let maxCells = 0;
   let maxSpan = 0;
@@ -1829,108 +2020,255 @@ function getItemFootprintBulk(item) {
   return { maxCells, maxSpan, isLarge };
 }
 
+/** 是否箱内最后一块未放物品（含正在拖的这一块） */
+function isLastRemainingItem(item) {
+  return items.every((entry) => entry === item || entry.placed);
+}
+
+/**
+ * 最后一块全盘朝向分析：哪种脚印还能填洞。
+ * - uniqueFillShapeKey：全盘只剩一种脚印能放
+ * - needsRotateToFill：当前脚印全盘 0 合法，但别的脚印有
+ * - preferredRotation：优先帮转的朝向（最短步数）
+ */
+function analyzeLastPieceFill(item) {
+  if (!isLastRemainingItem(item)) return null;
+
+  const byShape = new Map();
+  for (let rotation = 0; rotation < 4; rotation += 1) {
+    const shape = rotateShape(item.shape, rotation);
+    const shapeKey = shapeMatrixKey(shape);
+    const steps = minRotationSteps(item.rotation, rotation);
+    let count = 0;
+    let sample = null;
+    const maxX = grid.cols - shape[0].length;
+    const maxY = grid.rows - shape.length;
+    for (let gy = 0; gy <= maxY; gy += 1) {
+      for (let gx = 0; gx <= maxX; gx += 1) {
+        const placement = getPlacement(item, gx, gy, shape);
+        if (!placement.valid) continue;
+        count += 1;
+        if (!sample) {
+          sample = {
+            gx,
+            gy,
+            shape,
+            rotation,
+            shapeKey,
+            baseLevel: placement.baseLevel,
+            valid: true,
+            inside: true
+          };
+        }
+      }
+    }
+    const prev = byShape.get(shapeKey);
+    if (!prev || count > prev.count || (count === prev.count && steps < prev.steps)) {
+      byShape.set(shapeKey, {
+        shapeKey,
+        rotation,
+        steps,
+        count,
+        sample,
+        shape
+      });
+    }
+  }
+
+  const currentKey = shapeMatrixKey(rotateShape(item.shape, item.rotation));
+  const currentEntry = byShape.get(currentKey);
+  const fillable = [...byShape.values()].filter((e) => e.count > 0);
+  const uniqueFill = fillable.length === 1 ? fillable[0] : null;
+  const currentHasAny = (currentEntry?.count || 0) > 0;
+  const needsRotateToFill = !currentHasAny && fillable.length >= 1;
+
+  let preferredRotation = null;
+  if (uniqueFill) preferredRotation = uniqueFill.rotation;
+  else if (needsRotateToFill) {
+    fillable.sort((a, b) => a.steps - b.steps || b.count - a.count);
+    preferredRotation = fillable[0].rotation;
+  }
+
+  return {
+    uniqueFillShapeKey: uniqueFill?.shapeKey ?? null,
+    uniqueFillRotation: uniqueFill?.rotation ?? null,
+    needsRotateToFill,
+    preferredRotation,
+    currentHasAny,
+    fillableCount: fillable.length
+  };
+}
+
+/**
+ * 意图候选 v2：
+ * 门闩（合法不抢 / 瞄准 / 冷却）→ 区域 R 可放朝向 → 唯一则帮转 / 多则轻消歧。
+ */
 function getIntentCandidate(item, worldPosition) {
   const profile = getAutoRotateAssistProfile();
   const bulk = getItemFootprintBulk(item);
+  const lastPiece = isLastRemainingItem(item);
+  const lastFill = lastPiece ? analyzeLastPieceFill(item) : null;
+  if (lastPiece) {
+    item.finalIntentPlacement = getFinalItemIntentPlacement(item);
+    item.lastPieceFill = lastFill;
+  }
+
   const current = getCandidate(item, worldPosition);
-  // 大件中心略出界时仍允许意图评估（大箱 pad 更小，更保守）
-  if (!current.inside && !isNearBoxForIntent(worldPosition, profile.insidePad)) {
+  const nearPad = lastPiece ? profile.insidePad + 0.35 : profile.insidePad;
+  if (!current.inside && !isNearBoxForIntent(worldPosition, nearPad)) {
     clearAutoRotateIntent(item);
     return current;
   }
 
   const now = performance.now();
   const trend = getDragTrend(item, profile.edgeBand);
-  // 刷边时用 scrub 边；否则用当前位置贴边
   const edgeHint = trend.scrubAxis
-    || getEdgeAlignmentHint(worldPosition, profile.edgeBand);
+    || (trend.hovering ? getEdgeAlignmentHint(worldPosition, profile.edgeBand) : null);
 
-  // 手动点转后短锁：只显示当前角，系统不反拧
-  if (now < (item.manualLockUntil ?? 0)) {
-    clearAutoRotateIntent(item);
-    return current;
+  // —— 硬门闩 ——
+  const manualLockLeft = (item.manualLockUntil ?? 0) - now;
+  if (manualLockLeft > 0) {
+    if (!(lastPiece && lastFill?.needsRotateToFill && manualLockLeft < manualLockMs * 0.35)) {
+      clearAutoRotateIntent(item);
+      return current;
+    }
   }
 
-  // 合法不抢：手指下当前角已合法则不换
   if (current.valid) {
     clearAutoRotateIntent(item);
     return current;
   }
 
-  // 中/大箱：需瞄准态；快甩路过不转
   if (profile.requireAiming && !trend.allowAssist) {
     clearAutoRotateIntent(item);
     return current;
   }
 
-  // 大件（4×2 等）：只认「停稳」或「明确刷边」，慢速晃动不够 → 防太敏捷
-  if (bulk.isLarge && !trend.hovering && !trend.edgeScrub) {
+  // 大件：停稳/刷边才评估；最后一块允许慢瞄
+  if (bulk.isLarge && !lastPiece && !trend.hovering && !trend.edgeScrub) {
+    clearAutoRotateIntent(item);
+    return current;
+  }
+  if (bulk.isLarge && lastPiece && !trend.allowAssist) {
     clearAutoRotateIntent(item);
     return current;
   }
 
-  const cooldownMs = bulk.isLarge
-    ? profile.cooldownMs * 1.35
-    : profile.cooldownMs;
-  if (now - (item.lastAutoRotationAt ?? 0) < cooldownMs) {
-    return current;
-  }
-
-  // 只收集「转后 valid」的候选；一个都没有 → 不转
-  const ranked = rankNearbyRotationCandidates(
+  // —— ①② 区域 R + 可放朝向（先于冷却，便于唯一可放缩短冷却）——
+  const region = analyzeRegionPlaceableOrients(
     item,
     worldPosition,
     trend,
     edgeHint,
     profile,
-    bulk
+    bulk,
+    lastFill
   );
-  if (!ranked.length) {
+
+  let cooldownMs = bulk.isLarge && !lastPiece
+    ? profile.cooldownMs * 1.35
+    : profile.cooldownMs;
+  if (lastPiece) cooldownMs *= 0.45;
+  // 意图清晰时冷却更短；但从下往上入箱时不享受短冷却（路过底边）
+  if (trend.dragUpIntoBox && trend.nearBottomEntry) {
+    cooldownMs *= 1.15;
+  } else if (region.uniqueOtherShapeKey) {
+    cooldownMs *= 0.5;
+  } else if (!region.currentSnap0Valid && region.bestCandidate) {
+    cooldownMs *= 0.72;
+  }
+  if (trend.dragDownFromTop) cooldownMs *= 0.85;
+  if (profile.tier === 'small' && !region.uniqueOtherShapeKey) {
+    cooldownMs = Math.max(cooldownMs, profile.cooldownMs);
+  }
+  if (now - (item.lastAutoRotationAt ?? 0) < cooldownMs) {
+    return current;
+  }
+
+  // 提交锁：非「唯一可放改向 / 刷边 / 最后一块必转」时不反拧
+  const commitLeft = (item.assistCommitUntil ?? 0) - now;
+  const uniqueNeedsRotate = Boolean(
+    region.uniqueOtherShapeKey
+    || (lastFill?.needsRotateToFill && lastFill.preferredRotation != null
+      && lastFill.preferredRotation !== item.rotation)
+  );
+  const strongOverride = Boolean(
+    uniqueNeedsRotate
+    || trend.edgeScrub
+    || (lastPiece && lastFill?.needsRotateToFill)
+  );
+  if (commitLeft > 0 && !strongOverride) {
     clearAutoRotateIntent(item);
     return current;
   }
 
-  const best = ranked[0];
-  const second = ranked[1];
-  // 大件：几乎只用悬停/刷边的吸附，不用「慢速」那档宽松
-  const aimingLike = bulk.isLarge
-    ? (trend.hovering || trend.edgeScrub)
-    : (trend.hovering || trend.aiming || trend.edgeScrub);
-  const baseSnapCells = aimingLike
-    ? profile.hoverMaxSnapCells
-    : profile.maxSnapCells;
-  const maxSnapCells = autoRotateSnapLimitCells(baseSnapCells, best.shape);
-  let scoreMargin = aimingLike
-    ? profile.hoverScoreMargin
-    : profile.scoreMargin;
-  // 大件提高分差门槛，减少「擦边就转」
-  if (bulk.isLarge) scoreMargin = Math.max(scoreMargin, 0.55);
-  const maxSnapDistanceSq = (grid.cell * maxSnapCells) ** 2;
-
-  if (!best.valid || best.distanceSq > maxSnapDistanceSq) {
+  const best = region.bestCandidate;
+  if (!best || !best.valid) {
     clearAutoRotateIntent(item);
     return current;
   }
 
-  // 大件始终要分差；小件唯一脚印可略放宽
-  const uniqueOrient = !second || second.shapeKey === best.shapeKey;
-  const needMargin = bulk.isLarge || !profile.uniqueSkipsMargin || !uniqueOrient;
-  if (needMargin && second && best.score - second.score < scoreMargin) {
-    clearAutoRotateIntent(item);
-    return current;
-  }
-  if (best.rotation === item.rotation) {
+  if (best.isCurrent || best.rotation === item.rotation) {
     clearAutoRotateIntent(item);
     return current;
   }
 
-  // 大件：确认 key 更稳——用 shapeKey + 粗网格，避免微移连转
-  // 刷边：shapeKey+边；普通：shapeKey+粗分格
+  // ③ 决策置信
+  // unique / snap0 唯一合法：直接进入 dwell
+  // multi：分差；仅当「手指近旁当前也能放」时才对当前保守
+  if (!region.uniqueOtherShapeKey) {
+    let scoreMargin = trend.hovering || trend.edgeScrub
+      ? profile.hoverScoreMargin
+      : profile.scoreMargin;
+    if (bulk.isLarge) scoreMargin = Math.max(scoreMargin, 0.55);
+    if (lastPiece) scoreMargin *= 0.55;
+    if (profile.tier === 'small') scoreMargin = Math.max(scoreMargin, 0.42);
+    // 从下往上路过底边：抬高分差，路过不轻易转
+    if (trend.dragUpIntoBox && trend.nearBottomEntry) {
+      scoreMargin *= 1.35;
+    } else if (trend.dragDownFromTop) {
+      scoreMargin *= 0.85;
+    }
+    // 当前 snap 放不下、或其它朝向更贴手指 → 降低分差门槛
+    // （上拖入箱时仍保留较高门槛，避免「必经底边」误触）
+    if (
+      !(trend.dragUpIntoBox && trend.nearBottomEntry)
+      && (!region.currentSnap0Valid || region.otherCloserThanCurrent || !region.currentFingerViable)
+    ) {
+      scoreMargin *= 0.45;
+    }
+    const rival = region.bestRivalOther;
+    if (rival && best.score - rival.score < scoreMargin) {
+      clearAutoRotateIntent(item);
+      return current;
+    }
+    // 仅当「手指 snap 当前也能放」时才要求明显优于当前。
+    // snap 已红/非法时，R 里远处横放 kick 不应再挡住竖过来。
+    if (
+      region.currentFingerViable
+      && region.currentSnap0Valid
+      && best.score - (region.bestCurrent?.score ?? -Infinity) < scoreMargin + 0.2
+    ) {
+      clearAutoRotateIntent(item);
+      return current;
+    }
+  }
+
+  // 够近：距离硬门（防远处完美洞代打）
+  if (best.distanceSq > region.maxDistanceSq) {
+    clearAutoRotateIntent(item);
+    return current;
+  }
+
   let hoverCellKey;
-  if (trend.edgeScrub && edgeHint) {
+  if (region.uniqueOtherShapeKey) {
+    hoverCellKey = `region-unique:${region.uniqueOtherShapeKey}`;
+  } else if (lastPiece && lastFill?.needsRotateToFill) {
+    hoverCellKey = `last:${best.shapeKey}`;
+  } else if (trend.edgeScrub && edgeHint) {
     hoverCellKey = `${best.shapeKey}:scrub:${edgeHint}`;
   } else if (bulk.isLarge) {
-    hoverCellKey = `${best.shapeKey}:L:${Math.floor(best.gx / 2)},${Math.floor(best.gy / 2)},${best.baseLevel}`;
+    hoverCellKey = `${best.shapeKey}:L:${Math.floor(best.gx / 2)},${Math.floor(best.gy / 2)}`;
   } else {
     hoverCellKey = `${best.shapeKey}:${best.gx},${best.gy},${best.baseLevel}`;
   }
@@ -1942,15 +2280,45 @@ function getIntentCandidate(item, worldPosition) {
 
   let dwellScale = 1;
   if (trend.edgeScrub) dwellScale = profile.dwellScrubScale;
-  else if (trend.hovering || trend.aiming) dwellScale = profile.dwellHoverScale;
-  // 大件：多停一会再转
-  if (bulk.isLarge) dwellScale *= 1.45;
+  else if (trend.hovering) dwellScale = profile.dwellHoverScale;
+  else if (trend.aiming) dwellScale = Math.min(1, profile.dwellHoverScale + 0.2);
+  if (bulk.isLarge && !lastPiece) dwellScale *= 1.45;
+  if (lastPiece) {
+    dwellScale *= 0.42;
+    if (lastFill?.needsRotateToFill || lastFill?.uniqueFillShapeKey) dwellScale *= 0.55;
+  }
+
+  /**
+   * 手势门闩：
+   * - 从下往上 + 底边区域：迟钝（托盘入箱必经，勿抢转）
+   * - 从上往下：更及时
+   * - 停稳后无上拖趋势：不受上拖惩罚
+   */
+  const entryDragUp = trend.dragUpIntoBox && trend.nearBottomEntry && !trend.hovering;
+  const entryDragDown = trend.dragDownFromTop && !trend.hovering;
+  if (entryDragUp) {
+    dwellScale *= 1.65;
+  } else if (entryDragDown) {
+    dwellScale *= 0.82;
+  }
+
+  // 区域唯一可放：稍快；但上拖路过底边时不走「秒转」
+  if (region.uniqueOtherShapeKey && !entryDragUp) {
+    dwellScale *= 0.4;
+    if (!region.currentSnap0Valid) dwellScale *= 0.85;
+    dwellScale = Math.min(dwellScale, 0.42);
+  } else if (region.uniqueOtherShapeKey && entryDragUp) {
+    // 仍可转，但要明显停/慢一点才认
+    dwellScale *= 0.85;
+    dwellScale = Math.max(dwellScale, 1.05);
+  } else if (profile.tier === 'small' && !lastPiece) {
+    dwellScale = Math.max(dwellScale, 0.95);
+  }
   const dwellNeed = profile.dwellMs * dwellScale;
   if (now - (item.autoRotateIntentSince ?? 0) < dwellNeed) {
     return current;
   }
 
-  // 硬门：提交前再确认可放；不能放则不旋转
   if (!isPlacementStillValid(item, best)) {
     clearAutoRotateIntent(item);
     return current;
@@ -1958,6 +2326,8 @@ function getIntentCandidate(item, worldPosition) {
 
   applyIntentRotation(item, best.rotation);
   item.lastAutoRotationAt = now;
+  item.assistCommitRotation = best.rotation;
+  item.assistCommitUntil = now + assistCommitLockMs;
   clearAutoRotateIntent(item);
   const confirmed = getCandidateForRotation(item, worldPosition, item.rotation);
   return confirmed.valid ? confirmed : best;
@@ -1981,31 +2351,57 @@ function getAutoRotateKicks(shape, useLongKicks = true) {
 }
 
 /**
- * 其它「互异脚印」朝向在 kick 邻域内的合法落点。
- * 硬规则：仅 placement.valid；同一 shape 矩阵只保留最短步数 rotation。
+ * v2 核心：在目标区域 R 内统计各互异脚印的合法落点。
+ * - 距离硬截断 = R（防远处完美洞代打）
+ * - 打分以「近」为主；刷边/方向仅轻消歧
+ * - 含当前脚印，便于「R 内当前也能放 → 不转」
  */
-function rankNearbyRotationCandidates(
+function analyzeRegionPlaceableOrients(
   item,
   worldPosition,
   trend = null,
   edgeHint = null,
   profile = null,
-  bulk = null
+  bulk = null,
+  lastFill = null
 ) {
   const matches = [];
   const seen = new Set();
+  const byShape = new Map();
   const finalPlacement = item.finalIntentPlacement;
   const dragTrend = trend || getDragTrend(item);
   const assist = profile || getAutoRotateAssistProfile();
   const pieceBulk = bulk || getItemFootprintBulk(item);
-  const preferredAxis = edgeHint !== undefined
-    ? edgeHint
-    : (dragTrend.hovering ? getEdgeAlignmentHint(worldPosition, assist.edgeBand) : null);
-  const orients = getDistinctRotationOptions(item);
+  const lastPieceFill = lastFill || item.lastPieceFill || null;
+  const preferredAxis = edgeHint
+    || (dragTrend.edgeScrub
+      ? getEdgeAlignmentHint(worldPosition, assist.edgeBand)
+      : null);
+  const orients = getDistinctRotationOptions(item, { includeCurrent: true });
 
-  for (const { rotation, shape, steps, key: shapeKey } of orients) {
+  // R：档位半径 + 形状跨度放宽；最后一块略放大；局部全死时用全盘 preferred 兜底
+  let regionCells = assist.regionRadiusCells ?? 1.2;
+  regionCells = autoRotateSnapLimitCells(regionCells, item.shape);
+  if (lastPieceFill) regionCells += 0.45;
+  if (lastPieceFill?.needsRotateToFill) regionCells += 0.35;
+  const aimingLike = dragTrend.hovering || dragTrend.edgeScrub
+    || (!pieceBulk.isLarge && dragTrend.aiming);
+  const maxSnapCells = aimingLike
+    ? Math.max(regionCells, autoRotateSnapLimitCells(assist.hoverMaxSnapCells, item.shape))
+    : Math.max(regionCells * 0.92, autoRotateSnapLimitCells(assist.maxSnapCells, item.shape));
+  const maxDistanceSq = (grid.cell * maxSnapCells) ** 2;
+  /**
+   * 手指近旁核心区：判断「当前朝向在这儿能不能放」。
+   * 不能用整个 R——小空箱时横竖在 R 里都有合法 kick，会永远不转。
+   */
+  const fingerCoreCells = Math.min(
+    maxSnapCells,
+    Math.max(0.5, (assist.regionRadiusCells ?? 1.2) * 0.55)
+  );
+  const fingerCoreDistSq = (grid.cell * fingerCoreCells) ** 2;
+
+  for (const { rotation, shape, steps, key: shapeKey, isCurrent } of orients) {
     const snap = getSnapGridForShape(worldPosition, shape, assist.insidePad);
-    // 大件仍可用长 kick 找到合法位，但得分更保守
     const longPiece = shape[0].length >= 3 || shape.length >= 3;
     const kickList = getAutoRotateKicks(shape, assist.useLongKicks || longPiece);
     const longAxis = shapeLongAxis(shape);
@@ -2021,60 +2417,80 @@ function rankNearbyRotationCandidates(
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
 
-      // 用脚印区域距离，不用几何中心（大件才能转得过来）
       const distanceSq = footprintDistanceSq(worldPosition, gx, gy, shape);
-      const distCells = Math.sqrt(distanceSq) / Math.max(grid.cell, 1e-6);
-      let score = -autoRotateDistWeight * distCells;
+      // 硬截断：不在 R 内的合法位不参与（防代打远处洞）
+      if (distanceSq > maxDistanceSq) continue;
 
-      // 优先 ±90° 最短步数
+      const distCells = Math.sqrt(distanceSq) / Math.max(grid.cell, 1e-6);
+      const nearFinger = distanceSq <= fingerCoreDistSq;
+      // 主分：越近越好
+      let score = -autoRotateDistWeight * distCells;
       score -= autoRotateStepPenalty * steps;
 
-      // 贴边意图：大件权重更低，避免扫一下就贴边转
-      const edgeIntent = pieceBulk.isLarge
-        ? (dragTrend.edgeScrub || dragTrend.hovering)
-        : (dragTrend.edgeScrub || dragTrend.hovering || dragTrend.aiming);
-      if (edgeIntent && preferredAxis && longAxis) {
-        const onFinger = dx === 0 && dy === 0;
-        const weight = dragTrend.edgeScrub ? 1.0 : (onFinger ? 0.85 : 0.4);
-        const edgeW = pieceBulk.isLarge ? assist.edgeBonus * 0.55 : assist.edgeBonus;
-        if (longAxis === preferredAxis) score += edgeW * weight;
-        else score -= edgeW * 0.3 * weight;
-      }
+      // 粘滞仅当「当前朝向在手指近旁就能放」；远 kick 不粘，否则小箱永远横着
+      if (isCurrent && nearFinger) score += 0.22;
 
-      // kick0 合法
+      // 手指 snap 位（kick0）合法：强信号「这个朝向就是对准这里」
       if (dx === 0 && dy === 0) {
-        if (dragTrend.edgeScrub) score += pieceBulk.isLarge ? 0.25 : 0.45;
-        else if (dragTrend.hovering) score += pieceBulk.isLarge ? 0.2 : 0.45;
-        else if (!pieceBulk.isLarge && dragTrend.aiming) score += 0.35;
+        score += pieceBulk.isLarge ? 0.55 : 0.95;
+        if (dragTrend.edgeScrub) score += pieceBulk.isLarge ? 0.2 : 0.35;
+        else if (dragTrend.hovering) score += pieceBulk.isLarge ? 0.15 : 0.3;
+        else if (!pieceBulk.isLarge && dragTrend.aiming) score += 0.22;
       }
-
-      // 手指在脚印内：大件只给轻量分（之前 +0.9 太容易连转）
       if (distanceSq < 1e-8) {
-        score += pieceBulk.isLarge ? 0.2 : 0.75;
+        score += pieceBulk.isLarge ? 0.18 : 0.7;
       }
-
-      // 大件：远离 snap 中心的 kick 降权，减少「远处合法就抢转」
       if (pieceBulk.isLarge && (Math.abs(dx) + Math.abs(dy) >= 2)) {
-        score -= 0.35;
+        score -= 0.4;
       }
 
-      // 移动趋势：大件不在慢速晃时用趋势加分（避免敏捷）
-      if (
-        !pieceBulk.isLarge
-        && !dragTrend.edgeScrub
-        && !dragTrend.hovering
-        && dragTrend.axis
-        && longAxis
-      ) {
-        if (longAxis === dragTrend.axis) score += autoRotateTrendBonus;
-        else score -= autoRotateTrendBonus * 0.5;
+      // 轻消歧：仅明确刷边时用贴边偏好（被动贴边不再主导）
+      if (dragTrend.edgeScrub && preferredAxis && longAxis) {
+        const edgeW = (pieceBulk.isLarge ? assist.edgeBonus * 0.5 : assist.edgeBonus) * 0.85;
+        if (longAxis === preferredAxis) score += edgeW;
+        else score -= edgeW * 0.25;
+      }
+
+      // 轻消歧：移动方向（够慢才信）
+      const useMotionDir = longAxis
+        && dragTrend.stableAxis
+        && (dragTrend.motionConfidence || 0) >= autoRotateMotionConfidenceMin
+        && (
+          dragTrend.hovering
+          || dragTrend.edgeScrub
+          || (
+            dragTrend.aiming
+            && dragTrend.speedCells <= autoRotateMotionDirMaxSpeedCells
+          )
+        );
+      if (useMotionDir) {
+        let dirW = autoRotateMotionDirBonus * (assist.motionDirWeight ?? 0.7);
+        if (pieceBulk.isLarge) dirW *= 0.38;
+        const conf = dragTrend.motionConfidence;
+        if (longAxis === dragTrend.stableAxis) score += dirW * conf;
+        else score -= dirW * 0.35 * conf;
+        if (dragTrend.approachAxis && longAxis === dragTrend.approachAxis) {
+          score += dirW * 0.28 * conf;
+        }
       }
 
       if (finalPlacement && rotation === finalPlacement.rotation) {
-        score += pieceBulk.isLarge ? autoRotateFinalBonus * 0.5 : autoRotateFinalBonus;
+        score += pieceBulk.isLarge ? autoRotateFinalBonus * 0.45 : autoRotateFinalBonus;
       }
 
-      matches.push({
+      if (lastPieceFill?.preferredRotation != null) {
+        const prefShape = shapeMatrixKey(
+          rotateShape(item.shape, lastPieceFill.preferredRotation)
+        );
+        if (shapeKey === prefShape) {
+          score += lastPieceFill.uniqueFillShapeKey ? 1.2 : 0.85;
+          if (lastPieceFill.needsRotateToFill) score += 0.5;
+        } else if (lastPieceFill.uniqueFillShapeKey) {
+          score -= 0.75;
+        }
+      }
+
+      const entry = {
         gx,
         gy,
         shape,
@@ -2085,13 +2501,177 @@ function rankNearbyRotationCandidates(
         distanceSq,
         score,
         valid: true,
-        baseLevel: placement.baseLevel
+        baseLevel: placement.baseLevel,
+        isCurrent: Boolean(isCurrent)
+      };
+      matches.push(entry);
+
+      const agg = byShape.get(shapeKey) || {
+        shapeKey,
+        count: 0,
+        countNear: 0,
+        snap0Valid: false,
+        best: null,
+        bestNear: null,
+        isCurrent: Boolean(isCurrent),
+        rotation
+      };
+      agg.count += 1;
+      if (nearFinger) {
+        agg.countNear += 1;
+        if (!agg.bestNear || entry.score > agg.bestNear.score) agg.bestNear = entry;
+      }
+      if (dx === 0 && dy === 0) agg.snap0Valid = true;
+      if (!agg.best || entry.score > agg.best.score) {
+        agg.best = entry;
+        agg.rotation = rotation;
+      }
+      byShape.set(shapeKey, agg);
+    }
+  }
+
+  // 局部 R 全空但最后一块全局必须转：用全盘 preferred 再扫一次扩大 R
+  if (
+    matches.length === 0
+    && lastPieceFill?.needsRotateToFill
+    && lastPieceFill.preferredRotation != null
+  ) {
+    const rotation = lastPieceFill.preferredRotation;
+    const shape = rotateShape(item.shape, rotation);
+    const shapeKey = shapeMatrixKey(shape);
+    const steps = minRotationSteps(item.rotation, rotation);
+    const snap = getSnapGridForShape(worldPosition, shape, assist.insidePad + 0.5);
+    const kickList = getAutoRotateKicks(shape, true);
+    const expandedMax = (grid.cell * (maxSnapCells + 1.2)) ** 2;
+    for (const [dx, dy] of kickList) {
+      const gx = snap.gx + dx;
+      const gy = snap.gy + dy;
+      const placement = getPlacement(item, gx, gy, shape);
+      if (!placement.valid) continue;
+      const distanceSq = footprintDistanceSq(worldPosition, gx, gy, shape);
+      if (distanceSq > expandedMax) continue;
+      const distCells = Math.sqrt(distanceSq) / Math.max(grid.cell, 1e-6);
+      const entry = {
+        gx,
+        gy,
+        shape,
+        rotation,
+        shapeKey,
+        steps,
+        inside: true,
+        distanceSq,
+        score: -autoRotateDistWeight * distCells + 1.5,
+        valid: true,
+        baseLevel: placement.baseLevel,
+        isCurrent: false
+      };
+      matches.push(entry);
+      byShape.set(shapeKey, {
+        shapeKey,
+        count: 1,
+        best: entry,
+        isCurrent: false,
+        rotation
       });
+      break;
     }
   }
 
   matches.sort((a, b) => b.score - a.score || a.distanceSq - b.distanceSq || a.steps - b.steps);
-  return matches;
+
+  const viable = [...byShape.values()].filter((e) => e.count > 0);
+  const otherViable = viable.filter((e) => !e.isCurrent);
+  const currentAgg = viable.find((e) => e.isCurrent) || null;
+  const otherNear = otherViable.filter((e) => e.countNear > 0);
+  const currentFingerViable = Boolean(currentAgg && currentAgg.countNear > 0);
+  const currentSnap0Valid = Boolean(currentAgg?.snap0Valid);
+
+  /**
+   * 唯一可放（强意图）——按优先级：
+   * 1) 手指近旁当前放不下，恰好一种其它脚印近旁能放
+   * 2) 当前 snap0 非法，恰好一种其它 snap0 合法
+   * 3) 当前 snap0 非法，R 内恰好一种其它脚印有合法（2×1 横↔竖经典路径）
+   */
+  let uniqueOtherShapeKey = null;
+  if (!currentFingerViable && otherNear.length === 1) {
+    uniqueOtherShapeKey = otherNear[0].shapeKey;
+  } else if (!currentSnap0Valid) {
+    const otherSnap0 = otherViable.filter((e) => e.snap0Valid);
+    if (otherSnap0.length === 1) {
+      uniqueOtherShapeKey = otherSnap0[0].shapeKey;
+    } else if (otherViable.length === 1) {
+      // 空 2×2 上横条红框：竖放是唯一另一种脚印
+      uniqueOtherShapeKey = otherViable[0].shapeKey;
+    }
+  }
+
+  // 最后一块：全局唯一可填脚印
+  if (
+    !uniqueOtherShapeKey
+    && lastPieceFill?.uniqueFillShapeKey
+    && lastPieceFill.needsRotateToFill
+  ) {
+    const g = byShape.get(lastPieceFill.uniqueFillShapeKey);
+    if (g && !g.isCurrent) uniqueOtherShapeKey = g.shapeKey;
+  }
+
+  const bestCandidate = uniqueOtherShapeKey
+    ? (byShape.get(uniqueOtherShapeKey)?.bestNear
+      || byShape.get(uniqueOtherShapeKey)?.best
+      || matches.find((m) => !m.isCurrent)
+      || null)
+    : (matches.find((m) => !m.isCurrent) || null);
+
+  const otherMatches = matches.filter((m) => !m.isCurrent);
+  let bestRivalOther = null;
+  if (otherMatches.length >= 2) {
+    bestRivalOther = otherMatches.find((m) => m.shapeKey !== otherMatches[0].shapeKey) || null;
+  }
+
+  // 其它朝向是否明显比「当前近旁最佳」更贴手指
+  const bestCurrentNear = currentAgg?.bestNear || currentAgg?.best || null;
+  const otherCloserThanCurrent = Boolean(
+    bestCandidate
+    && bestCurrentNear
+    && bestCandidate.distanceSq + (grid.cell * 0.12) ** 2 < bestCurrentNear.distanceSq
+  );
+
+  return {
+    matches,
+    byShape,
+    bestCandidate,
+    bestRivalOther,
+    bestCurrent: bestCurrentNear,
+    currentViable: Boolean(currentAgg),
+    currentFingerViable,
+    currentSnap0Valid,
+    otherCloserThanCurrent,
+    uniqueOtherShapeKey,
+    maxDistanceSq,
+    maxSnapCells,
+    fingerCoreCells
+  };
+}
+
+/** @deprecated 兼容旧名：委托区域分析的 matches 列表 */
+function rankNearbyRotationCandidates(
+  item,
+  worldPosition,
+  trend = null,
+  edgeHint = null,
+  profile = null,
+  bulk = null,
+  lastFill = null
+) {
+  return analyzeRegionPlaceableOrients(
+    item,
+    worldPosition,
+    trend,
+    edgeHint,
+    profile,
+    bulk,
+    lastFill
+  ).matches;
 }
 
 function getFinalItemIntentPlacement(item) {
@@ -2631,6 +3211,9 @@ function rotateItemByTap(item) {
   item.rotation = (item.rotation + 1) % 4;
   setItemRotationTarget(item, item.rotation);
   item.manualLockUntil = performance.now() + manualLockMs;
+  // 手动转也清掉帮转提交锁，避免短时不能再意图帮转
+  item.assistCommitUntil = 0;
+  item.assistCommitRotation = null;
   clearAutoRotateIntent(item);
 
   if (item === activeItem) {

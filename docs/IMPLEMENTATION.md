@@ -994,90 +994,53 @@ new THREE.EdgesGeometry(ghost.geometry)
 
 边框透明度 `0.95`。
 
-## 19. 意图自动转角
+## 19. 意图自动转角（v2）
 
 权威变更表：`docs/research/INTENT-IMPLEMENTATION-CHANGELOG.md`。  
 实现：`src/main.js`。
+
+### 主路径
+
+```text
+门闩 → analyzeRegionPlaceableOrients(R) → 决策 → dwell → valid 提交
+```
+
+1. **门闩**：近箱、manualLock、绿不抢、瞄准态、大件停稳/刷边、冷却。  
+2. **区域 R**：`regionRadiusCells` + 形状跨度；合法落点须 `distanceSq ≤ maxDistanceSq`（距离硬截断）。  
+3. **可放朝向**：互异脚印（**含当前**）在 kick 内 `getPlacement.valid`。  
+4. **决策**：  
+   - 当前脚印在 R 也能放 → **不转**  
+   - 仅 1 种其它脚印可放 → `uniqueOtherShapeKey`，较快 dwell  
+   - ≥2 种 → 分差；当前也存活时更保守；不够自信 **宁可不转**  
+5. **提交**：`isPlacementStillValid` + `assistCommitLockMs`。
 
 ### 全局阈值
 
 | 常量 | 约值 | 作用 |
 |------|------|------|
 | `autoRotateHoverSpeedCells` | 0.75 | 悬停 |
-| `autoRotateAimSpeedCells` | 1.5 | 慢速瞄准上限（普通滑不算） |
+| `autoRotateAimSpeedCells` | 1.5 | 慢速瞄准上限 |
 | `autoRotateMotionDirMaxSpeedCells` | 1.15 | 方向消歧速度上限 |
-| `autoRotateMotionConfidenceMin` | 0.72 | 方向主轴置信下限 |
-| `autoRotateMotionDirBonus` | 0.38 | 方向加分基数 |
-| `manualLockMs` | 800 | 手动点转锁 |
+| `manualLockMs` / `assistCommitLockMs` | 800 / 900 | 手动锁 / 帮转提交锁 |
 
 ### 分档（`getAutoRotateAssistProfile`）
 
-- **small** / **medium** / **large**：按 `cols*rows`、`levels`、体积。
-- 各档均 `requireAiming: true`；`uniqueSkipsMargin: false`。
-- **small**：`edgeBand=0.2`、`edgeBonus=0.4`、`motionDirWeight=0.4`、**`twistEdgeBoost: false`**（轻挪不乱拧）。
-- **medium**：拧边可加速；`motionDirWeight=0.7`；长 kick。
-- **large**：更严 snap/margin/dwell/cooldown；`motionDirWeight=0.45`；拧边可加速但边权更低。
-- **大件** `getItemFootprintBulk`（格数≥6 或跨度≥4）：平时须 hovering 或 edgeScrub；dwell×1.45；cooldown×1.35；更高 margin。最后一块 / 拧边可放开慢速。
+- **small / medium / large**：灵敏度与 `regionRadiusCells`（约 1.15 / 1.25 / 1.05）。  
+- 大件 `getItemFootprintBulk`：须 hovering 或 edgeScrub；dwell×1.45；cooldown×1.35。  
+- 贴边 `edgeBonus` 仅刷边时轻用，**不再作主引擎**。
 
-### 瞄准态（`getDragTrend` / `detectEdgeScrub`）
+### 轻消歧（非触发器）
 
-- hovering：&lt; ~0.75 格/秒  
-- aiming：&lt; ~1.5 格/秒  
-- edgeScrub：同一侧边沿边滑动/来回  
-- 正常滑/快甩：`allowAssist = false`  
-- 附带 `stableAxis` / `motionConfidence` / `approachAxis`（来自 `getStableMotionHint`）
-
-### 拧边（`getMismatchEdgeIntent`）
-
-- 横条(x) 贴左/右 → 偏好竖(z)；竖条(z) 贴上/下 → 偏好横(x)。  
-- medium/large：`twistEdgeBoost` 缩短冷却、降 margin、加快 dwell、略放宽够近。  
-- small：须 hovering 或 edgeScrub 才算强拧边；参数不加速；`mismatchBand` 不额外 ×1.15。
-
-### 方向消歧（`getStableMotionHint` + rank 内加分）
-
-- **不触发**转角；仅在多个 valid 朝向里偏置分数。  
-- 启用条件：停稳 / 刷边 /（aiming 且速度 ≤1.15）且置信 ≥0.72。  
-- 左右偏好横、上下偏好竖；往边拱轻推 `approachAxis`。大件再 ×0.38。
-
-### 最后一块（`analyzeLastPieceFill`）
-
-- 全盘各互异脚印合法数；`needsRotateToFill` / `uniqueFill` / `preferredRotation`。  
-- 更松：冷却 ×0.45、吸附 +、dwell 更短、margin ×0.55；可跳过 margin。  
-- 仍绿不抢、拿起不转、转后须 valid。
-
-### 流程（`getIntentCandidate`）
-
-1. 近箱（inside 或 pad；最后一块 pad 略大）否则不评估。  
-2. manualLock → 不转（最后一块 must-rotate 可提前结束锁）。  
-3. `current.valid` → 合法不抢。  
-4. requireAiming 且非瞄准 → 不转。  
-5. 大件：非最后/拧边时须停稳/刷边。  
-6. 冷却（拧边/最后一块会改写；small 有下限）。  
-7. `rankNearbyRotationCandidates`：仅 valid；互异脚印；**脚印区域距离** `footprintDistanceSq`；贴边/拧边/方向/最后一块加权。  
-8. maxSnap / margin / dwell 按 profile + 大件/拧边/最后一块修正。  
-9. 拧边时 best 须已是贴边朝向。  
-10. `isPlacementStillValid` 后再 `applyIntentRotation`（最短角）。
-
-### 旋转动画
-
-- `canonicalRotationY` + `shortestAngleDelta`  
-- `setItemRotationTarget` / `updateRotationAnimations` 最短路径插值  
-
-### 拿起 / 手动 / 最后一块
-
-- `beginDragItem`：缓存 final，不强转；清 trail / lock  
-- `rotateItemByTap`：`manualLockUntil = now + 800`  
-- `getFinalItemIntentPlacement`：仅加权  
-- `analyzeLastPieceFill`：收官全盘填空分析  
+- 刷边 → 轻贴边偏好  
+- `getStableMotionHint` → 多朝向时偏置分数  
+- 最后一块 `analyzeLastPieceFill` → 全盘唯一/必须转时加权或扩大 R  
 
 ### 相关函数
 
-- `getAutoRotateAssistProfile` · `getItemFootprintBulk`  
-- `sampleDragTrail` · `getDragTrend` · `getStableMotionHint` · `detectEdgeScrub`  
-- `getEdgeAlignmentHint` · `getEdgeSide` · `getMismatchEdgeIntent`  
-- `getDistinctRotationOptions` · `footprintDistanceSq` · `analyzeLastPieceFill`  
-- `rankNearbyRotationCandidates` · `getIntentCandidate` · `isPlacementStillValid`  
-- `applyIntentRotation` · `shortestAngleDelta` · `setItemRotationTarget`
+- `analyzeRegionPlaceableOrients`（核心）· `getIntentCandidate`  
+- `getDistinctRotationOptions({ includeCurrent })` · `footprintDistanceSq`  
+- `analyzeLastPieceFill` · `getDragTrend` · `getStableMotionHint`  
+- `isPlacementStillValid` · `applyIntentRotation`
 
 ## 20. 提示自动摆放
 
