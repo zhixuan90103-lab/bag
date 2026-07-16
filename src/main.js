@@ -1496,7 +1496,7 @@ function onPointerMove(event) {
   sampleDragTrail(activeItem, activeItem.mesh.position);
   candidate = getIntentCandidate(activeItem, activeItem.mesh.position);
   updateActiveItemDragScale();
-  showGridGuide(candidate?.baseLevel ?? 0);
+  showGridGuide(candidate?.displayBaseLevel ?? candidate?.baseLevel ?? 0);
   updateGhost(candidate);
 }
 
@@ -1575,7 +1575,8 @@ function getCandidateForRotation(item, worldPosition, rotation) {
   const shape = rotateShape(item.shape, rotation);
   const snap = getSnapGridForShape(worldPosition, shape);
   const placement = getPlacement(item, snap.gx, snap.gy, shape);
-  return { gx: snap.gx, gy: snap.gy, shape, inside: snap.inside, rotation, ...placement };
+  const displayBaseLevel = getGhostDisplayBaseLevel(item, snap.gx, snap.gy, shape, placement);
+  return { gx: snap.gx, gy: snap.gy, shape, inside: snap.inside, rotation, ...placement, displayBaseLevel };
 }
 
 function getSnapGridForShape(worldPosition, shape, insidePad = 0.8) {
@@ -2274,6 +2275,30 @@ function getIntendedBaseLevel(voxelGrid, gx, gy, shape, itemHeight) {
   return Math.min(maxStack, maxBaseLevel);
 }
 
+function getGhostDisplayBaseLevel(item, gx, gy, shape, placement) {
+  if (placement.valid) return placement.baseLevel;
+
+  const voxelGrid = buildVoxelGrid(item);
+  const itemHeight = getItemHeight(item);
+  const maxBaseLevel = Math.max(0, grid.levels - itemHeight);
+  let maxStack = 0;
+  let hasVisibleFootprint = false;
+
+  for (let y = 0; y < shape.length; y += 1) {
+    for (let x = 0; x < shape[y].length; x += 1) {
+      if (!shape[y][x]) continue;
+      const cx = gx + x;
+      const cy = gy + y;
+      if (cx < 0 || cy < 0 || cx >= grid.cols || cy >= grid.rows) continue;
+      hasVisibleFootprint = true;
+      maxStack = Math.max(maxStack, getColumnStackHeight(voxelGrid, cx, cy));
+    }
+  }
+
+  if (!hasVisibleFootprint) return placement.baseLevel ?? 0;
+  return THREE.MathUtils.clamp(maxStack, 0, maxBaseLevel);
+}
+
 function getItemHeight(item) {
   return item.height ?? 1;
 }
@@ -2356,7 +2381,8 @@ function updateGhost(next) {
     depthWrite: false
   });
   const origin = gridToWorld(next.gx, next.gy, shape);
-  const y = getBoardSurfaceY() + next.baseLevel * grid.levelHeight + 0.035;
+  const displayBaseLevel = next.displayBaseLevel ?? next.baseLevel ?? 0;
+  const y = getBoardSurfaceY() + displayBaseLevel * grid.levelHeight + 0.035;
   const cell = grid.cell;
   const inset = 0.08;
 
@@ -2609,7 +2635,7 @@ function rotateItemByTap(item) {
 
   if (item === activeItem) {
     candidate = getCandidate(item, item.mesh.position);
-    showGridGuide(candidate?.baseLevel ?? 0);
+    showGridGuide(candidate?.displayBaseLevel ?? candidate?.baseLevel ?? 0);
     updateGhost(candidate);
     return;
   }
