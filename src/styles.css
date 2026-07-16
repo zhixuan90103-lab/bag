@@ -273,6 +273,47 @@ button {
   transform: translate(-50%, 0);
 }
 
+.settle-panel {
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  min-width: 200px;
+  padding: 22px 24px 18px;
+  border-radius: 16px;
+  background: rgba(255, 251, 245, 0.96);
+  box-shadow: 0 18px 48px rgba(62, 45, 31, 0.28);
+  transform: translate(-50%, -50%);
+  text-align: center;
+}
+
+.settle-panel[hidden] {
+  display: none;
+}
+
+.settle-panel strong {
+  font-size: 20px;
+  color: #3f3025;
+}
+
+.settle-panel span {
+  font-size: 13px;
+  color: #7a6250;
+}
+
+.settle-panel button {
+  margin-top: 6px;
+  min-width: 132px;
+  height: 42px;
+  border-radius: 10px;
+  background: #f27f3d;
+  box-shadow: 0 10px 24px rgba(190, 91, 45, 0.26);
+}
+
 @media (min-width: 760px) {
   .topbar {
     left: 24px;

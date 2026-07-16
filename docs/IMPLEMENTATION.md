@@ -1737,3 +1737,5 @@ bf62d6a Expand shadow camera bounds
 |------|------|------|
 | 2026-07-16 | 非法 ghost 意图落脚层（方案 A） | 用 `getIntendedBaseLevel` / `getColumnStackHeight` 替代 `getLowestBlockedLevel` 作为非法 `baseLevel`；合法规则不变。 |
 | 2026-07-16 | 动态投射平面回滚 | 曾试多层动态平面 + 拖拽物随层升降；手感不佳后完整回滚，拖拽仍固定 `pickupHeight`。 |
+| 2026-07-16 | 开箱 / 合箱第 1 刀 | 前墙 Alpha + 后铰链盖；`gamePhase`: opening→play→closing→settle；开箱先盖后墙、合箱先墙后盖；仪式可点跳过；结算「再来一次」重播开箱。 |
+| 2026-07-16 | RSC 四襟片顶盖 | 整盖改为前/后 major + 左/右 minor 四片；开箱 major→minor 外翻；合箱 minor→major 向中合拢。 |

@@ -14,6 +14,26 @@ const trayEntryOffsetX = 1.15;
 const trayLerpAlpha = 0.18;
 const rotationLerpAlpha = 0.12;
 
+/**
+ * RSC 四襟片开合时间轴：
+ * 开箱：major(前/后) 外翻 → minor(左/右) 外翻 → 前墙淡出
+ * 合箱：前墙淡入 → minor 向中合 → major 向中合
+ */
+const BOX_ANIM = {
+  openMajorMs: 420,
+  openMinorDelayMs: 140,
+  openMinorMs: 400,
+  openFrontDelayMs: 300,
+  openFrontMs: 340,
+  closeFrontMs: 320,
+  closeMinorDelayMs: 80,
+  closeMinorMs: 360,
+  closeMajorDelayMs: 260,
+  closeMajorMs: 440,
+  /** 襟片外翻角度（rad），约 1.217π ≈ 219°，过水平后再往下贴箱外侧 */
+  flapOpenAngle: Math.PI * 1.05 + Math.PI / 6
+};
+
 const app = document.querySelector('#app');
 app.innerHTML = `
   <canvas id="game"></canvas>
@@ -30,6 +50,11 @@ app.innerHTML = `
   </div>
   <button id="rotateBtn" class="rotate-btn" aria-label="旋转">↻</button>
   <div id="toast" class="toast">订单完成</div>
+  <div id="settlePanel" class="settle-panel" hidden>
+    <strong>订单完成</strong>
+    <span>纸箱已打包好</span>
+    <button id="replayBtn" type="button">再来一次</button>
+  </div>
   <div id="orientationGate" class="orientation-gate">
     <div>
       <strong>请竖屏游玩</strong>
@@ -81,6 +106,8 @@ document.body.appendChild(tablePanel);
 const canvas = document.querySelector('#game');
 const statusEl = document.querySelector('#status');
 const toastEl = document.querySelector('#toast');
+const settlePanel = document.querySelector('#settlePanel');
+const replayBtn = document.querySelector('#replayBtn');
 const rotateBtn = document.querySelector('#rotateBtn');
 const resetBtn = document.querySelector('#resetBtn');
 const hintBtn = document.querySelector('#hintBtn');
@@ -194,6 +221,16 @@ let tableMesh = null;
 let undoStack = [];
 let hintPlacement = null;
 let hintMove = null;
+/** boot | opening | play | closing | settle */
+let gamePhase = 'boot';
+let boxAnim = null;
+let frontWall = null;
+let frontWallMat = null;
+/** RSC 顶盖四襟片铰链：front/back/left/right */
+let flapHinges = { front: null, back: null, left: null, right: null };
+/** 0=合拢 1=全开；动画内可分 major/minor 不同进度 */
+let flapsOpenAmount = 0;
+let frontWallAlpha = 1;
 
 initBoard();
 initTray();
@@ -202,6 +239,7 @@ initCameraPanel();
 initLightPanel();
 initTablePanel();
 resize();
+startOpeningSequence();
 animate();
 
 window.addEventListener('resize', resize);
@@ -216,6 +254,7 @@ rotateBtn.addEventListener('click', rotateActiveOrLast);
 resetBtn.addEventListener('click', resetLevel);
 hintBtn.addEventListener('click', showHint);
 undoBtn.addEventListener('click', undoLastMove);
+replayBtn.addEventListener('click', resetLevel);
 cameraResetBtn.addEventListener('click', resetCameraRig);
 cameraModeSelect.addEventListener('change', () => {
   cameraRig.mode = cameraModeSelect.value;
@@ -245,9 +284,32 @@ function initBoard() {
   boardGroup.add(base);
 
   const wallMat = new THREE.MeshStandardMaterial({ color: '#e69a46', roughness: 0.86 });
+  // 后 / 左 / 右
   addWall(0, wallY, grid.top - wallOffset, grid.width + 0.14, grid.wallHeight, wallThickness, wallMat);
   addWall(grid.left - wallOffset, wallY, 0, wallThickness, grid.wallHeight, grid.depth + 0.14, wallMat);
   addWall(-grid.left + wallOffset, wallY, 0, wallThickness, grid.wallHeight, grid.depth + 0.14, wallMat);
+
+  // 前墙（朝相机 / +Z）：开箱后淡出，合箱前淡入
+  frontWallMat = new THREE.MeshStandardMaterial({
+    color: '#e69a46',
+    roughness: 0.86,
+    transparent: true,
+    opacity: 1,
+    depthWrite: true
+  });
+  frontWall = new THREE.Mesh(
+    new THREE.BoxGeometry(grid.width + 0.14, grid.wallHeight, wallThickness),
+    frontWallMat
+  );
+  frontWall.position.set(0, wallY, grid.top + grid.depth + wallOffset);
+  frontWall.castShadow = true;
+  frontWall.receiveShadow = true;
+  boardGroup.add(frontWall);
+
+  // RSC 顶盖：四片襟片，合拢时向箱口中心折合
+  createRscFlaps();
+  setFlapsOpenAmount(0);
+  setFrontWallAlpha(1);
 
   boardGroup.add(gridGuideGroup);
   gridGuideGroup.add(gridHeightGuideGroup);
@@ -393,6 +455,235 @@ function hideGridGuide() {
   gridGuideGroup.visible = false;
 }
 
+/**
+ * 创建 RSC 四襟片。
+ * major（前/后）：各盖住约一半 depth，合拢时在中缝相遇。
+ * minor（左/右）：各盖住约一半 width，合拢时略低于 major，模拟压在 major 下面。
+ */
+function createRscFlaps() {
+  const flapMat = new THREE.MeshStandardMaterial({ color: '#d8893a', roughness: 0.88 });
+  const flapT = 0.055;
+  const majorLen = Math.max(grid.depth * 0.5 - 0.03, 0.2);
+  const minorLen = Math.max(grid.width * 0.5 - 0.03, 0.2);
+  const yMajor = grid.wallHeight + 0.02;
+  const yMinor = grid.wallHeight + 0.008;
+  const zBack = grid.top;
+  const zFront = grid.top + grid.depth;
+  const zMid = grid.top + grid.depth / 2;
+  const xLeft = grid.left;
+  const xRight = grid.left + grid.width;
+
+  // 后襟片：铰链在后边，板伸向 +Z（箱心）
+  const backHinge = new THREE.Group();
+  backHinge.position.set(0, yMajor, zBack);
+  const backFlap = new THREE.Mesh(
+    new THREE.BoxGeometry(grid.width + 0.08, flapT, majorLen),
+    flapMat
+  );
+  backFlap.position.set(0, flapT / 2, majorLen / 2);
+  backFlap.castShadow = true;
+  backFlap.receiveShadow = true;
+  backHinge.add(backFlap);
+  boardGroup.add(backHinge);
+
+  // 前襟片：铰链在前边，板伸向 -Z（箱心）
+  const frontHinge = new THREE.Group();
+  frontHinge.position.set(0, yMajor, zFront);
+  const frontFlap = new THREE.Mesh(
+    new THREE.BoxGeometry(grid.width + 0.08, flapT, majorLen),
+    flapMat
+  );
+  frontFlap.position.set(0, flapT / 2, -majorLen / 2);
+  frontFlap.castShadow = true;
+  frontFlap.receiveShadow = true;
+  frontHinge.add(frontFlap);
+  boardGroup.add(frontHinge);
+
+  // 左襟片：铰链在左边，板伸向 +X
+  const leftHinge = new THREE.Group();
+  leftHinge.position.set(xLeft, yMinor, zMid);
+  const leftFlap = new THREE.Mesh(
+    new THREE.BoxGeometry(minorLen, flapT, grid.depth + 0.04),
+    flapMat
+  );
+  leftFlap.position.set(minorLen / 2, flapT / 2, 0);
+  leftFlap.castShadow = true;
+  leftFlap.receiveShadow = true;
+  leftHinge.add(leftFlap);
+  boardGroup.add(leftHinge);
+
+  // 右襟片：铰链在右边，板伸向 -X
+  const rightHinge = new THREE.Group();
+  rightHinge.position.set(xRight, yMinor, zMid);
+  const rightFlap = new THREE.Mesh(
+    new THREE.BoxGeometry(minorLen, flapT, grid.depth + 0.04),
+    flapMat
+  );
+  rightFlap.position.set(-minorLen / 2, flapT / 2, 0);
+  rightFlap.castShadow = true;
+  rightFlap.receiveShadow = true;
+  rightHinge.add(rightFlap);
+  boardGroup.add(rightHinge);
+
+  flapHinges = { front: frontHinge, back: backHinge, left: leftHinge, right: rightHinge };
+}
+
+/** major 前/后：0 合拢，1 外翻 */
+function setMajorFlapsOpen(t) {
+  const a = THREE.MathUtils.clamp(t, 0, 1);
+  const ang = THREE.MathUtils.lerp(0, BOX_ANIM.flapOpenAngle, a);
+  if (flapHinges.back) flapHinges.back.rotation.x = -ang;
+  if (flapHinges.front) flapHinges.front.rotation.x = ang;
+}
+
+/** minor 左/右：0 合拢，1 外翻 */
+function setMinorFlapsOpen(t) {
+  const a = THREE.MathUtils.clamp(t, 0, 1);
+  const ang = THREE.MathUtils.lerp(0, BOX_ANIM.flapOpenAngle, a);
+  if (flapHinges.left) flapHinges.left.rotation.z = ang;
+  if (flapHinges.right) flapHinges.right.rotation.z = -ang;
+}
+
+/** 四片同步（跳过/终态用） */
+function setFlapsOpenAmount(t) {
+  flapsOpenAmount = THREE.MathUtils.clamp(t, 0, 1);
+  setMajorFlapsOpen(flapsOpenAmount);
+  setMinorFlapsOpen(flapsOpenAmount);
+}
+
+function setFrontWallAlpha(alpha) {
+  frontWallAlpha = THREE.MathUtils.clamp(alpha, 0, 1);
+  if (!frontWall || !frontWallMat) return;
+  if (frontWallAlpha <= 0.02) {
+    frontWall.visible = false;
+    frontWallMat.opacity = 0;
+    frontWallMat.transparent = true;
+    frontWallMat.depthWrite = false;
+    return;
+  }
+  frontWall.visible = true;
+  const solid = frontWallAlpha >= 0.98;
+  frontWallMat.transparent = !solid;
+  frontWallMat.opacity = solid ? 1 : frontWallAlpha;
+  frontWallMat.depthWrite = solid;
+  frontWallMat.needsUpdate = true;
+}
+
+function isGameplayLocked() {
+  return gamePhase !== 'play' || Boolean(hintMove);
+}
+
+function hideSettlePanel() {
+  settlePanel.hidden = true;
+}
+
+function showSettlePanel() {
+  settlePanel.hidden = false;
+}
+
+function startOpeningSequence() {
+  if (activeItem) {
+    restoreActiveItem();
+    activeItem = null;
+    candidate = null;
+  }
+  clearHint();
+  hintMove = null;
+  hideSettlePanel();
+  toastEl.classList.remove('show');
+  completionShown = false;
+  gamePhase = 'opening';
+  setFlapsOpenAmount(0);
+  setFrontWallAlpha(1);
+  boxAnim = { kind: 'opening', startedAt: performance.now() };
+  statusEl.textContent = '开箱中…';
+}
+
+function startClosingSequence() {
+  if (gamePhase !== 'play' || completionShown) return;
+  if (activeItem) {
+    restoreActiveItem();
+    activeItem = null;
+    candidate = null;
+  }
+  clearHint();
+  hintMove = null;
+  hideGridGuide();
+  updateGhost(null);
+  completionShown = true;
+  gamePhase = 'closing';
+  boxAnim = { kind: 'closing', startedAt: performance.now() };
+  statusEl.textContent = `${items.length}/${items.length} 件已入箱`;
+}
+
+function skipBoxSequence() {
+  if (!boxAnim) return;
+  if (boxAnim.kind === 'opening') finishOpeningSequence();
+  else if (boxAnim.kind === 'closing') finishClosingSequence();
+}
+
+function finishOpeningSequence() {
+  boxAnim = null;
+  setFlapsOpenAmount(1);
+  setFrontWallAlpha(0);
+  gamePhase = 'play';
+  refreshStatus();
+}
+
+function finishClosingSequence() {
+  boxAnim = null;
+  setFlapsOpenAmount(0);
+  setFrontWallAlpha(1);
+  gamePhase = 'settle';
+  showToast('订单完成', 1600);
+  showSettlePanel();
+  statusEl.textContent = '订单完成';
+}
+
+function updateBoxSequence(now = performance.now()) {
+  if (!boxAnim) return;
+  const elapsed = now - boxAnim.startedAt;
+
+  if (boxAnim.kind === 'opening') {
+    // major 先外翻，minor 稍后，前墙再淡出
+    const majorT = smootherStep(elapsed / BOX_ANIM.openMajorMs);
+    setMajorFlapsOpen(majorT);
+    const minorElapsed = elapsed - BOX_ANIM.openMinorDelayMs;
+    const minorT = minorElapsed <= 0 ? 0 : smootherStep(minorElapsed / BOX_ANIM.openMinorMs);
+    setMinorFlapsOpen(minorT);
+    flapsOpenAmount = Math.max(majorT, minorT);
+    const frontElapsed = elapsed - BOX_ANIM.openFrontDelayMs;
+    const frontT = frontElapsed <= 0 ? 0 : smootherStep(frontElapsed / BOX_ANIM.openFrontMs);
+    setFrontWallAlpha(1 - frontT);
+    const doneAt = Math.max(
+      BOX_ANIM.openMajorMs,
+      BOX_ANIM.openMinorDelayMs + BOX_ANIM.openMinorMs,
+      BOX_ANIM.openFrontDelayMs + BOX_ANIM.openFrontMs
+    );
+    if (elapsed >= doneAt) finishOpeningSequence();
+    return;
+  }
+
+  if (boxAnim.kind === 'closing') {
+    // 前墙先回，再 minor 合拢，最后 major 合拢（贴近真箱封顶顺序）
+    const frontT = smootherStep(elapsed / BOX_ANIM.closeFrontMs);
+    setFrontWallAlpha(frontT);
+    const minorElapsed = elapsed - BOX_ANIM.closeMinorDelayMs;
+    const minorClose = minorElapsed <= 0 ? 0 : smootherStep(minorElapsed / BOX_ANIM.closeMinorMs);
+    setMinorFlapsOpen(1 - minorClose);
+    const majorElapsed = elapsed - BOX_ANIM.closeMajorDelayMs;
+    const majorClose = majorElapsed <= 0 ? 0 : smootherStep(majorElapsed / BOX_ANIM.closeMajorMs);
+    setMajorFlapsOpen(1 - majorClose);
+    flapsOpenAmount = Math.min(1 - minorClose, 1 - majorClose);
+    const doneAt = Math.max(
+      BOX_ANIM.closeFrontMs,
+      BOX_ANIM.closeMinorDelayMs + BOX_ANIM.closeMinorMs,
+      BOX_ANIM.closeMajorDelayMs + BOX_ANIM.closeMajorMs
+    );
+    if (elapsed >= doneAt) finishClosingSequence();
+  }
+}
+
 function initItems() {
   items = level.items.map((data) => {
     const item = {
@@ -481,7 +772,12 @@ function rotateShape(shape, turns) {
 }
 
 function onPointerDown(event) {
-  if (hintMove) return;
+  if (boxAnim && (gamePhase === 'opening' || gamePhase === 'closing')) {
+    event.preventDefault();
+    skipBoxSequence();
+    return;
+  }
+  if (isGameplayLocked()) return;
   const picked = pickItem(event);
   if (!picked) return;
   event.preventDefault();
@@ -511,7 +807,7 @@ function onPointerDown(event) {
 }
 
 function onPointerMove(event) {
-  if (!activeItem) return;
+  if (!activeItem || isGameplayLocked()) return;
   event.preventDefault();
   updatePointer(event);
   if (!raycaster.ray.intersectPlane(dragPlane, hitPoint)) return;
@@ -526,6 +822,15 @@ function onPointerMove(event) {
 function onPointerUp(event) {
   if (!activeItem) return;
   event.preventDefault();
+  if (gamePhase !== 'play') {
+    restoreActiveItem();
+    setItemShadow(activeItem, true);
+    activeItem = null;
+    candidate = null;
+    hideGridGuide();
+    updateGhost(null);
+    return;
+  }
   canvas.releasePointerCapture(event.pointerId);
   if (candidate?.valid) {
     placeItem(activeItem, candidate);
@@ -874,7 +1179,7 @@ function updateGhost(next) {
 }
 
 function showHint() {
-  if (activeItem || hintMove) return;
+  if (isGameplayLocked() || activeItem || hintMove) return;
   const hint = findHintPlacement();
   if (!hint) {
     showToast('暂无可放位置');
@@ -991,6 +1296,8 @@ function smootherStep(t) {
 }
 
 function rotateActiveOrLast() {
+  if (isGameplayLocked() && !activeItem) return;
+  if (gamePhase !== 'play') return;
   const item = activeItem || items.find((entry) => entry.placed && entry.lastValid);
   if (!item) return;
   const previous = item.rotation;
@@ -1019,11 +1326,21 @@ function rotateActiveOrLast() {
 }
 
 function resetLevel() {
+  if (activeItem) {
+    try {
+      canvas.releasePointerCapture?.();
+    } catch {
+      /* ignore */
+    }
+    activeItem = null;
+    candidate = null;
+  }
   completionShown = false;
   undoStack = [];
   hintMove = null;
   clearHint();
   toastEl.classList.remove('show');
+  hideSettlePanel();
   trayQueue = [...items];
   for (const item of items) {
     item.rotation = 0;
@@ -1038,10 +1355,12 @@ function resetLevel() {
     setItemRotationImmediate(item, 0);
     item.mesh.visible = true;
     setItemScale(item, trayScale);
+    setItemShadow(item, true);
   }
   layoutTrayQueue({ animate: false });
   hideGridGuide();
-  refreshStatus();
+  updateGhost(null);
+  startOpeningSequence();
 }
 
 function pushUndoSnapshot() {
@@ -1061,6 +1380,10 @@ function pushUndoSnapshot() {
 }
 
 function undoLastMove() {
+  if (gamePhase !== 'play') {
+    showToast(gamePhase === 'settle' ? '订单已完成' : '请稍候');
+    return;
+  }
   if (hintMove) {
     showToast('演示中不能撤销');
     return;
@@ -1186,10 +1509,21 @@ function updateRotationAnimations() {
 
 function refreshStatus() {
   const placed = items.filter((item) => item.placed).length;
+  if (gamePhase === 'opening') {
+    statusEl.textContent = '开箱中…';
+    return;
+  }
+  if (gamePhase === 'closing') {
+    statusEl.textContent = `${items.length}/${items.length} 件已入箱`;
+    return;
+  }
+  if (gamePhase === 'settle') {
+    statusEl.textContent = '订单完成';
+    return;
+  }
   statusEl.textContent = `${placed}/${items.length} 件已入箱`;
-  if (placed === items.length && !completionShown) {
-    completionShown = true;
-    showToast('订单完成', 1800);
+  if (placed === items.length && items.length > 0 && !completionShown && gamePhase === 'play') {
+    startClosingSequence();
   }
 }
 
@@ -1443,6 +1777,7 @@ function resize() {
 
 function animate() {
   requestAnimationFrame(animate);
+  updateBoxSequence();
   updateHintMove();
   updateTrayAnimations();
   updateRotationAnimations();
