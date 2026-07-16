@@ -685,7 +685,7 @@ canvas.addEventListener('pointerdown', onPointerDown);
 5. 记录物品是否已放置。
 6. 记录拖拽开始旋转。
 7. 如果物品已放置，记录 `previousPlacement`。
-8. 缓存最后一块唯一解（仅加权，拿起不转角）。
+8. 缓存最后一块 final 加权（`getFinalItemIntentPlacement`）；拖中再跑 `analyzeLastPieceFill`；拿起不转角。
 9. 物品放大到拖拽态。
 10. Y 坐标设置为 `grid.pickupHeight`。
 11. 临时关闭投影。
@@ -860,22 +860,45 @@ if (item === exceptItem || !item.placed) continue;
 5. 第一个合法层级返回 `{ valid: true, baseLevel }`。
 6. 全部失败返回 `{ valid: false, baseLevel: getIntendedBaseLevel(...) }`。
 
+`getCandidateForRotation()` 会在此基础上额外计算 `displayBaseLevel`：
+
+- `baseLevel`：规则判定层，决定能不能放、最终落在哪一层。
+- `displayBaseLevel`：UI 展示层，决定红/绿 ghost 和网格显示在哪一层。
+- 合法时两者相同。
+- 非法时允许不同，避免错误提示被下层模型遮住。
+
 ### 非法放置的展示层（方案 A · 意图落脚层）
 
 合法时的 `baseLevel` 是真正可落的层级。  
-**非法时的 `baseLevel` 只用于 UI**（红 ghost、网格引导高度），不影响能否放置。
+非法时不再只依赖 `baseLevel` 直接画 UI，而是使用 `displayBaseLevel` 控制红 ghost 和网格引导高度。
 
 旧实现使用 `getLowestBlockedLevel()`：找 footprint 内**最先碰到已有体素的层**。在「想叠到上层、但下方有缺口」时，往往返回 `0`，红框画在箱底，被已放物品遮住，玩家误以为是碰撞而非悬空。
 
-当前改为 `getIntendedBaseLevel()`：
+当前分两步：
+
+1. `getPlacement()` 用 `getIntendedBaseLevel()` 计算非法候选层。
+2. `getGhostDisplayBaseLevel()` 为 UI 单独计算可见展示层。
+
+`getIntendedBaseLevel()`：
 
 1. 对 footprint 每一格用 `getColumnStackHeight()` 计算从底板往上**连续占满的堆高**。
 2. 取各格堆高的 **`max`**，作为玩家意图对准的支撑面。
 3. 再夹紧到 `min(maxStack, grid.levels - itemHeight)`，避免越顶。
 
+`getGhostDisplayBaseLevel()`：
+
+1. 合法放置直接返回 `placement.baseLevel`。
+2. 非法放置重新构建排除当前拖拽物的体素网格。
+3. 遍历 shape footprint 中仍在箱内的格子。
+4. 对这些可见格取 `getColumnStackHeight()` 的最大值。
+5. 夹紧到 `0..grid.levels - itemHeight` 后作为 `displayBaseLevel`。
+6. 如果 footprint 完全不在箱内，则退回 `placement.baseLevel ?? 0`。
+
 典型场景：
 
-- 部分格堆高 `1`、缺口格堆高 `0`（完整支撑失败）→ 非法 `baseLevel = 1`，红框画在第 1 层表面。
+- 部分格堆高 `1`、缺口格堆高 `0`（完整支撑失败）→ `displayBaseLevel = 1`，红框画在第 1 层表面。
+- 底层已被物品遮挡、玩家实际在上层尝试摆放 → 红框与网格显示在可见上层，不沉到箱底。
+- footprint 部分出界 → 只统计箱内可见格，尽量保持红框可见。
 - 全空非法（极少见）→ `baseLevel = 0`。
 - 堆已顶到箱顶附近 → 夹紧后不超过可放上限。
 
@@ -886,6 +909,11 @@ function getColumnStackHeight(voxelGrid, cx, cy) { /* 连续 stack 高度 */ }
 
 function getIntendedBaseLevel(voxelGrid, gx, gy, shape, itemHeight) {
   // max(stack) under footprint, clamped to levels - itemHeight
+}
+
+function getGhostDisplayBaseLevel(item, gx, gy, shape, placement) {
+  // valid: placement.baseLevel
+  // invalid: max visible stack height under footprint, clamped
 }
 ```
 
@@ -941,15 +969,22 @@ opacity: next.hint ? 0.36 : 0.58
 Y 坐标：
 
 ```js
-ghost.position.y = getBoardSurfaceY() + next.baseLevel * grid.levelHeight + 0.035;
+const displayBaseLevel = next.displayBaseLevel ?? next.baseLevel ?? 0;
+ghost.position.y = getBoardSurfaceY() + displayBaseLevel * grid.levelHeight + 0.035;
 ```
 
 也就是说 ghost 是平面，但会出现在对应层级。
 
 - **合法**：`baseLevel` 为真实可放层。
-- **非法**：`baseLevel` 为意图落脚层（`getIntendedBaseLevel`），避免红框沉在第 0 层被遮挡。
+- **非法**：`displayBaseLevel` 为 UI 可见展示层，避免红框沉在第 0 层被遮挡。
 
-网格引导 `showGridGuide(candidate?.baseLevel ?? 0)` 与 ghost 共用同一 `baseLevel`，非法时网格也会抬到意图层。
+网格引导与 ghost 共用同一展示层：
+
+```js
+showGridGuide(candidate?.displayBaseLevel ?? candidate?.baseLevel ?? 0);
+```
+
+因此拖拽非法时，红框和网格会一起抬到玩家当前尝试放置的可见层。
 
 边框：
 
@@ -961,31 +996,67 @@ new THREE.EdgesGeometry(ghost.geometry)
 
 ## 19. 意图自动转角
 
-权威变更表：`docs/research/INTENT-IMPLEMENTATION-CHANGELOG.md`。
+权威变更表：`docs/research/INTENT-IMPLEMENTATION-CHANGELOG.md`。  
+实现：`src/main.js`。
+
+### 全局阈值
+
+| 常量 | 约值 | 作用 |
+|------|------|------|
+| `autoRotateHoverSpeedCells` | 0.75 | 悬停 |
+| `autoRotateAimSpeedCells` | 1.5 | 慢速瞄准上限（普通滑不算） |
+| `autoRotateMotionDirMaxSpeedCells` | 1.15 | 方向消歧速度上限 |
+| `autoRotateMotionConfidenceMin` | 0.72 | 方向主轴置信下限 |
+| `autoRotateMotionDirBonus` | 0.38 | 方向加分基数 |
+| `manualLockMs` | 800 | 手动点转锁 |
 
 ### 分档（`getAutoRotateAssistProfile`）
 
 - **small** / **medium** / **large**：按 `cols*rows`、`levels`、体积。
-- large：更严 maxSnap、margin、dwell、cooldown；`requireAiming`；禁唯一免 margin。
-- **大件** `getItemFootprintBulk`（格数≥6 或跨度≥4，如 4×2）：须 hovering 或 edgeScrub；dwell×1.45；cooldown×1.35；更高 margin。
+- 各档均 `requireAiming: true`；`uniqueSkipsMargin: false`。
+- **small**：`edgeBand=0.2`、`edgeBonus=0.4`、`motionDirWeight=0.4`、**`twistEdgeBoost: false`**（轻挪不乱拧）。
+- **medium**：拧边可加速；`motionDirWeight=0.7`；长 kick。
+- **large**：更严 snap/margin/dwell/cooldown；`motionDirWeight=0.45`；拧边可加速但边权更低。
+- **大件** `getItemFootprintBulk`（格数≥6 或跨度≥4）：平时须 hovering 或 edgeScrub；dwell×1.45；cooldown×1.35；更高 margin。最后一块 / 拧边可放开慢速。
 
 ### 瞄准态（`getDragTrend` / `detectEdgeScrub`）
 
-- hovering：几乎停住  
-- aiming：慢速（&lt; ~2.4 格/秒）  
+- hovering：&lt; ~0.75 格/秒  
+- aiming：&lt; ~1.5 格/秒  
 - edgeScrub：同一侧边沿边滑动/来回  
-- 快甩：`allowAssist = false`
+- 正常滑/快甩：`allowAssist = false`  
+- 附带 `stableAxis` / `motionConfidence` / `approachAxis`（来自 `getStableMotionHint`）
+
+### 拧边（`getMismatchEdgeIntent`）
+
+- 横条(x) 贴左/右 → 偏好竖(z)；竖条(z) 贴上/下 → 偏好横(x)。  
+- medium/large：`twistEdgeBoost` 缩短冷却、降 margin、加快 dwell、略放宽够近。  
+- small：须 hovering 或 edgeScrub 才算强拧边；参数不加速；`mismatchBand` 不额外 ×1.15。
+
+### 方向消歧（`getStableMotionHint` + rank 内加分）
+
+- **不触发**转角；仅在多个 valid 朝向里偏置分数。  
+- 启用条件：停稳 / 刷边 /（aiming 且速度 ≤1.15）且置信 ≥0.72。  
+- 左右偏好横、上下偏好竖；往边拱轻推 `approachAxis`。大件再 ×0.38。
+
+### 最后一块（`analyzeLastPieceFill`）
+
+- 全盘各互异脚印合法数；`needsRotateToFill` / `uniqueFill` / `preferredRotation`。  
+- 更松：冷却 ×0.45、吸附 +、dwell 更短、margin ×0.55；可跳过 margin。  
+- 仍绿不抢、拿起不转、转后须 valid。
 
 ### 流程（`getIntentCandidate`）
 
-1. 近箱（inside 或 pad）否则不评估。  
-2. manualLock → 不转。  
+1. 近箱（inside 或 pad；最后一块 pad 略大）否则不评估。  
+2. manualLock → 不转（最后一块 must-rotate 可提前结束锁）。  
 3. `current.valid` → 合法不抢。  
 4. requireAiming 且非瞄准 → 不转。  
-5. 大件且非停稳/刷边 → 不转。  
-6. `rankNearbyRotationCandidates`：仅 valid；互异脚印；**脚印区域距离** `footprintDistanceSq`（非中心）。  
-7. maxSnap / margin / dwell 按 profile + 大件修正。  
-8. `isPlacementStillValid` 后再 `applyIntentRotation`（最短角）。
+5. 大件：非最后/拧边时须停稳/刷边。  
+6. 冷却（拧边/最后一块会改写；small 有下限）。  
+7. `rankNearbyRotationCandidates`：仅 valid；互异脚印；**脚印区域距离** `footprintDistanceSq`；贴边/拧边/方向/最后一块加权。  
+8. maxSnap / margin / dwell 按 profile + 大件/拧边/最后一块修正。  
+9. 拧边时 best 须已是贴边朝向。  
+10. `isPlacementStillValid` 后再 `applyIntentRotation`（最短角）。
 
 ### 旋转动画
 
@@ -997,13 +1068,15 @@ new THREE.EdgesGeometry(ghost.geometry)
 - `beginDragItem`：缓存 final，不强转；清 trail / lock  
 - `rotateItemByTap`：`manualLockUntil = now + 800`  
 - `getFinalItemIntentPlacement`：仅加权  
+- `analyzeLastPieceFill`：收官全盘填空分析  
 
 ### 相关函数
 
 - `getAutoRotateAssistProfile` · `getItemFootprintBulk`  
-- `sampleDragTrail` · `getDragTrend` · `detectEdgeScrub` · `getEdgeAlignmentHint`  
-- `getDistinctRotationOptions` · `footprintDistanceSq` · `rankNearbyRotationCandidates`  
-- `getIntentCandidate` · `isPlacementStillValid`  
+- `sampleDragTrail` · `getDragTrend` · `getStableMotionHint` · `detectEdgeScrub`  
+- `getEdgeAlignmentHint` · `getEdgeSide` · `getMismatchEdgeIntent`  
+- `getDistinctRotationOptions` · `footprintDistanceSq` · `analyzeLastPieceFill`  
+- `rankNearbyRotationCandidates` · `getIntentCandidate` · `isPlacementStillValid`  
 - `applyIntentRotation` · `shortestAngleDelta` · `setItemRotationTarget`
 
 ## 20. 提示自动摆放
@@ -1461,9 +1534,9 @@ dragPlane.constant = -grid.pickupHeight;
 
 提示按钮不是只提示，而是会从当前可见 3 个物品中选择一个可放位置，并自动演示摆放后真正放下。
 
-### 8. 意图自动转角 v1
+### 8. 意图自动转角（已迭代）
 
-拿起不转；箱内非法时 kick+打分+dwell 才转。最后一块唯一解仅加权。与提示代放分责。详见 §19。
+拿起不转；箱内非法 + 瞄准态 + 转后合法 + dwell/margin 才转。含分档、大件钝化、拧边、方向消歧、最后一块填空分析。与提示代放分责。详见 §19 与 `INTENT-IMPLEMENTATION-CHANGELOG.md`。
 
 ### 9. 性能注意
 
@@ -1616,7 +1689,7 @@ new THREE.MeshBasicMaterial({
 - `transparent: true` 让颜色半透明。
 - `depthWrite: false` 避免透明提示面片写入深度缓冲，减少它挡住后续透明对象的问题。
 
-但它仍然参与深度测试。后续如果出现提示面片被模型遮住或层级显示不符合预期，可以考虑显式设置 `depthTest` 或 `renderOrder`。
+但它仍然参与深度测试。当前优先通过 `displayBaseLevel` 把提示放到可见层来解决遮挡；后续如果仍出现提示面片被模型遮住，可以再考虑显式设置 `depthTest` 或 `renderOrder`。
 
 ### 19. HTML 前置条件
 
@@ -1712,6 +1785,7 @@ Some chunks are larger than 500 kB after minification.
 - 撤销记录粒度
 - 相机默认参数
 - 灯光默认参数
+- 意图自动转角阈值 / 分档 / 拧边与方向消歧（同步 §19 与 `INTENT-IMPLEMENTATION-CHANGELOG.md`）
 - CSS 移动端布局
 
 ## 29. 当前 Git 状态说明
@@ -1737,7 +1811,7 @@ bf62d6a Expand shadow camera bounds
 1. 设计 2-3 个真正体现多层支撑的测试关卡。
 2. 给 `levels.js` 增加多关卡数据，而不是继续只改当前关。
 3. 增加关卡切换和当前关卡索引。
-4. 决定是否保留“最后一块自动旋转”。
+4. 最后一块：已用 `analyzeLastPieceFill`（拖中帮转、拿起不转）；可继续按手感调参，无需再「决定是否保留拿起强转」。
 5. 给失败原因增加更明确反馈，例如“悬空”“碰撞”“越界”（文案 / Toast）；可选方案 B 按格标缺口。
 6. 多层动态投射平面：已试做后回滚，维持固定 `pickupHeight`；若以后再做，勿改拖拽物高度、只改瞄准平面或网格。
 7. 非法 ghost 遮挡：若意图层仍被侧面挡住，可考虑 `depthTest: false`（方案 C）。
@@ -1758,7 +1832,9 @@ bf62d6a Expand shadow camera bounds
 - 手动拖动物品能拿起、移动、放下。
 - 合法位置显示绿色平面。
 - 非法位置显示红色平面。
-- **上层悬空非法时，红框与网格在意图落脚层（非箱底被挡死）。**
+- **上层悬空非法时，红框与网格使用 `displayBaseLevel` 显示在可见尝试层（非箱底被挡死）。**
+- **底层已有物品遮挡时，非法红框不能沉到下层导致玩家看不到。**
+- **footprint 部分出界时，红框仍应尽量依据箱内可见格显示。**
 - 2x2x2 / 2x2x3 物品视觉高度正确。
 - 多高度物品占用对应层数。
 - 上层放置必须完整支撑。
@@ -1776,6 +1852,7 @@ bf62d6a Expand shadow camera bounds
 
 | 日期 | 变更 | 说明 |
 |------|------|------|
+| 2026-07-16 | 拆分 ghost 判定层和显示层 | 新增 `displayBaseLevel`；`baseLevel` 继续负责放置规则，红/绿 ghost 与网格使用展示层，解决多层遮挡下红色提示沉到底层的问题。 |
 | 2026-07-16 | 非法 ghost 意图落脚层（方案 A） | 用 `getIntendedBaseLevel` / `getColumnStackHeight` 替代 `getLowestBlockedLevel` 作为非法 `baseLevel`；合法规则不变。 |
 | 2026-07-16 | 动态投射平面回滚 | 曾试多层动态平面 + 拖拽物随层升降；手感不佳后完整回滚，拖拽仍固定 `pickupHeight`。 |
 | 2026-07-16 | 开箱 / 合箱第 1 刀 | 前墙 Alpha + 后铰链盖；`gamePhase`: opening→play→closing→settle；开箱先盖后墙、合箱先墙后盖；仪式可点跳过；结算「再来一次」重播开箱。 |
