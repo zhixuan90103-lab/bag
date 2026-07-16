@@ -32,10 +32,32 @@ const autoRotateStepPenalty = 0.4;
 /** 多朝向消歧：移动方向加分（不单独触发） */
 const autoRotateMotionDirBonus = 0.38;
 const autoRotateMotionConfidenceMin = 0.72;
-/** 速度：悬停 / 慢瞄 / 方向消歧上限（格/秒） */
-const autoRotateHoverSpeedCells = 0.75;
-const autoRotateAimSpeedCells = 1.5;
-const autoRotateMotionDirMaxSpeedCells = 1.15;
+/**
+ * 速度分档（格/秒，相对 grid.cell）——产品定义：
+ *   settled   < 0.38          停稳（再压低，须更「停住」）
+ *   slowSlide 0.38 ~ 0.68     慢滑对准（可帮转；上限再压低）
+ *   normal    0.68 ~ 1.6      正常挪位（不转）
+ *   fast      ≥ 1.6           快滑/甩（不转）
+ */
+const autoRotateSettledSpeedCells = 0.38;
+const autoRotateSlowSlideMaxCells = 0.68;
+const autoRotateNormalMaxCells = 1.6;
+/** 兼容旧名：均速低于此曾作 hover；现仅作参考/方向消歧 */
+const autoRotateHoverSpeedCells = autoRotateSettledSpeedCells;
+const autoRotateAimSpeedCells = autoRotateSlowSlideMaxCells;
+const autoRotateMotionDirMaxSpeedCells = autoRotateSlowSlideMaxCells;
+/** 慢滑要求主轴置信（左右或上下够稳，不是乱划） */
+const autoRotateSlowSlideAxisConfidence = 0.62;
+/**
+ * 2A（可试完再改）：多朝向消歧是否必须停稳。
+ * true = 慢滑只处理「唯一可放」；多解须 settled。
+ * false = 慢滑也可多朝向消歧（手感不够再关）。
+ */
+const autoRotateMultiOrientNeedsSettled = true;
+/**
+ * 近端轨迹位移（格）：用于 settled（几乎不动）与是否在滑。
+ */
+const autoRotateRelocateTrailCells = 0.2;
 const autoRotateTrailMs = 420;
 const autoRotateTrailMax = 18;
 
@@ -1465,6 +1487,11 @@ function beginDragItem(item, event) {
   activeItem.manualLockUntil = 0;
   activeItem.assistCommitUntil = 0;
   activeItem.assistCommitRotation = null;
+  /**
+   * 本拖是否已「Ghost 进过箱」：托盘拿起须先出现箱内落点预览，才允许帮转。
+   * 从箱内已放置拿起：视为已解锁。
+   */
+  activeItem.assistBoxUnlocked = Boolean(activeItem.placed);
   activeItem.dragTrail = [];
   activeItem.previousPlacement = activeItem.placed
     ? { gx: activeItem.gridX, gy: activeItem.gridY, level: activeItem.level, rotation: activeItem.rotation }
@@ -1602,10 +1629,43 @@ function getSnapGridForShape(worldPosition, shape, insidePad = 0.8) {
   return { gx, gy, inside };
 }
 
-/** 意图评估：略扩大箱区，避免大件中心刚出界就完全不帮转 */
+/** 意图评估：略扩大箱区（仅其它用途；帮转不再用「近箱」） */
 function isNearBoxForIntent(worldPosition, pad = 1.1) {
   return worldPosition.x >= grid.left - pad && worldPosition.x <= -grid.left + pad
     && worldPosition.z >= grid.top - pad && worldPosition.z <= -grid.top + pad;
+}
+
+/**
+ * 落点游戏：看红色 Ghost 脚印是否落在棋盘格内，而不是物品 mesh 中心是否在箱里。
+ * 任一占用格在 [0,cols)×[0,rows) 内 → Ghost 在箱内。
+ */
+function isGhostInBox(item, worldPosition, rotation = item.rotation) {
+  const shape = rotateShape(item.shape, rotation);
+  const snap = getSnapGridForShape(worldPosition, shape);
+  for (let y = 0; y < shape.length; y += 1) {
+    for (let x = 0; x < shape[y].length; x += 1) {
+      if (!shape[y][x]) continue;
+      const gx = snap.gx + x;
+      const gy = snap.gy + y;
+      if (gx >= 0 && gy >= 0 && gx < grid.cols && gy < grid.rows) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * 本拖是否允许辅助旋转（以 Ghost 落点为准）：
+ * - 托盘拿起：须至少有一次 Ghost 进过箱（解锁），且当前 Ghost 仍在箱内
+ * - 箱内拿起：开始即解锁，仍须当前 Ghost 在箱内
+ * - 归位托盘后解锁清零，须重新「Ghost 进箱」
+ */
+function canAssistRotateInBox(item, worldPosition) {
+  const ghostIn = isGhostInBox(item, worldPosition);
+  if (ghostIn) item.assistBoxUnlocked = true;
+  if (!item.assistBoxUnlocked) return false;
+  return ghostIn;
 }
 
 /**
@@ -1819,12 +1879,61 @@ function getVerticalEntryGesture(item, worldPosition) {
 }
 
 /**
- * 拖拽趋势：
- * - hovering：几乎停住
- * - aiming：慢速对准（不必死停）
- * - edgeScrub：靠边来回/上下刷
- * - allowAssist：可参与自动转（非快甩）
- * - stableAxis / motionConfidence / approachAxis：移动方向消歧
+ * 近端轨迹位移（格）：比整段均速更跟手。
+ */
+function getRecentTrailMoveCells(item) {
+  const trail = item.dragTrail;
+  if (!trail || trail.length < 3) return 0;
+  const from = Math.max(0, trail.length - 6);
+  let move = 0;
+  for (let i = from + 1; i < trail.length; i += 1) {
+    move += Math.hypot(trail[i].x - trail[i - 1].x, trail[i].z - trail[i - 1].z);
+  }
+  return move / Math.max(grid.cell, 1e-6);
+}
+
+/**
+ * 近端速度（格/秒）：只看最近 ~180ms，避免「整段 420ms 均速偏低」把正常滑算成慢滑。
+ */
+function getRecentTrailSpeedCells(item) {
+  const trail = item.dragTrail;
+  if (!trail || trail.length < 2) return 0;
+  const latestT = trail[trail.length - 1].t;
+  const windowMs = 180;
+  let i0 = trail.length - 1;
+  while (i0 > 0 && latestT - trail[i0 - 1].t < windowMs) i0 -= 1;
+  if (i0 >= trail.length - 1) i0 = Math.max(0, trail.length - 2);
+  const a = trail[i0];
+  const b = trail[trail.length - 1];
+  const dt = Math.max(16, b.t - a.t);
+  const dist = Math.hypot(b.x - a.x, b.z - a.z);
+  return (dist / Math.max(grid.cell, 1e-6)) / (dt / 1000);
+}
+
+/**
+ * 速度档：settled | slowSlide | normal | fast
+ */
+function classifyDragSpeedBand(speedCells) {
+  if (speedCells < autoRotateSettledSpeedCells) return 'settled';
+  if (speedCells < autoRotateSlowSlideMaxCells) return 'slowSlide';
+  if (speedCells < autoRotateNormalMaxCells) return 'normal';
+  return 'fast';
+}
+
+/**
+ * 分档取「整段」与「近端」中更猛的一档，避免拖慢再加速仍被当成慢滑。
+ * settled < slowSlide < normal < fast
+ */
+function stricterSpeedBand(a, b) {
+  const rank = { settled: 0, slowSlide: 1, normal: 2, fast: 3 };
+  return (rank[a] || 0) >= (rank[b] || 0) ? a : b;
+}
+
+/**
+ * 拖拽趋势（速度分档 + 手势）：
+ * - speedBand：settled / slowSlide / normal / fast
+ * - slowSlide：慢滑对准（速度窗 + 主轴稳 + 非上拖路过底边）
+ * - allowRotateAssist：settled | slowSlide | edgeScrub
  * - dragUpIntoBox / dragDownFromTop：纵向入箱手势
  */
 function getDragTrend(item, edgeBand = 0.28) {
@@ -1832,13 +1941,18 @@ function getDragTrend(item, edgeBand = 0.28) {
   if (!trail || trail.length < 2) {
     return {
       speedCells: 0,
+      speedBand: 'settled',
       dx: 0,
       dz: 0,
       hovering: true,
       aiming: true,
+      slowSlide: false,
       edgeScrub: false,
       scrubAxis: null,
       allowAssist: true,
+      allowRotateAssist: true,
+      relocating: false,
+      settled: true,
       axis: null,
       stableAxis: null,
       motionConfidence: 0,
@@ -1854,30 +1968,73 @@ function getDragTrend(item, edgeBand = 0.28) {
   const dx = b.x - a.x;
   const dz = b.z - a.z;
   const dist = Math.hypot(dx, dz);
-  const speedCells = (dist / Math.max(grid.cell, 1e-6)) / (dt / 1000);
-  const hovering = speedCells < autoRotateHoverSpeedCells;
-  const aiming = speedCells < autoRotateAimSpeedCells;
+  const speedCellsWhole = (dist / Math.max(grid.cell, 1e-6)) / (dt / 1000);
+  const speedCellsRecent = getRecentTrailSpeedCells(item);
+  // 分档用「更猛」的一端：近端已经常速/快滑时，绝不因整段均速低而进慢滑
+  const speedBand = stricterSpeedBand(
+    classifyDragSpeedBand(speedCellsWhole),
+    classifyDragSpeedBand(speedCellsRecent)
+  );
+  const speedCells = Math.max(speedCellsWhole, speedCellsRecent);
+  const recentMove = getRecentTrailMoveCells(item);
+  const relocating = recentMove > autoRotateRelocateTrailCells;
+
+  const scrub = detectEdgeScrub(item, edgeBand);
+  const motion = getStableMotionHint(item);
+  const entry = getVerticalEntryGesture(item, { x: b.x, z: b.z });
+  // 从下往上路过底边：不把「贴底刷边」当强瞄准
+  const edgeScrub = entry.dragUpIntoBox && entry.nearBottomEntry
+    ? false
+    : scrub.scrubbing;
+
+  // 停稳：速度在 settled 档，且近端几乎不动
+  const settled = speedBand === 'settled' && !relocating;
+  // 慢滑：速度窗 + 主轴稳 + 在动 + 非上拖路过底边
+  const axisOk = (motion.confidence || 0) >= autoRotateSlowSlideAxisConfidence
+    || (motion.stableAxis && (motion.confidence || 0) >= autoRotateSlowSlideAxisConfidence * 0.9);
+  const passBottomUp = entry.dragUpIntoBox && entry.nearBottomEntry;
+  /**
+   * 左右平移就位（如拖到最右侧竖放）：这是挪位不是改朝向。
+   * 主移轴为 x 且置信够 → 不进慢滑帮转，避免「往右滑被拧成横条」。
+   */
+  const lateralCarry = Boolean(
+    motion.stableAxis === 'x'
+    && (motion.confidence || 0) >= autoRotateSlowSlideAxisConfidence
+    && relocating
+  );
+  const slowSlide = speedBand === 'slowSlide'
+    && relocating
+    && axisOk
+    && !passBottomUp
+    && !lateralCarry;
+
+  const hovering = settled || speedBand === 'settled';
+  const aiming = speedBand === 'settled' || speedBand === 'slowSlide';
   let axis = null;
   if (dist > grid.cell * 0.12) {
     axis = Math.abs(dx) >= Math.abs(dz) ? 'x' : 'z';
   }
-  const scrub = detectEdgeScrub(item, edgeBand);
-  const motion = getStableMotionHint(item);
-  const entry = getVerticalEntryGesture(item, { x: b.x, z: b.z });
-  // 从下往上路过底边：不把「贴底刷边」当成强瞄准，减少误转
-  const edgeScrub = entry.dragUpIntoBox && entry.nearBottomEntry
-    ? false
-    : scrub.scrubbing;
-  const allowAssist = hovering || aiming || edgeScrub;
+
+  // 帮转：停稳 / 慢滑 / 刷边；常速、快滑、左右平移就位不进
+  const allowRotateAssist = edgeScrub || settled || slowSlide;
+  const allowAssist = allowRotateAssist || speedBand === 'normal';
+
   return {
     speedCells,
+    speedCellsRecent,
+    speedBand,
     dx,
     dz,
     hovering,
     aiming,
+    slowSlide,
+    lateralCarry,
     edgeScrub,
     scrubAxis: edgeScrub ? scrub.preferredLongAxis : null,
     allowAssist,
+    allowRotateAssist,
+    relocating,
+    settled,
     axis: motion.stableAxis || axis,
     stableAxis: motion.stableAxis || axis,
     motionConfidence: motion.confidence,
@@ -2114,8 +2271,8 @@ function getIntentCandidate(item, worldPosition) {
   }
 
   const current = getCandidate(item, worldPosition);
-  const nearPad = lastPiece ? profile.insidePad + 0.35 : profile.insidePad;
-  if (!current.inside && !isNearBoxForIntent(worldPosition, nearPad)) {
+  // 第一次（及之后）帮转：以红色 Ghost 是否在棋盘内为准（不是物品自身位置）
+  if (!canAssistRotateInBox(item, worldPosition)) {
     clearAutoRotateIntent(item);
     return current;
   }
@@ -2139,17 +2296,33 @@ function getIntentCandidate(item, worldPosition) {
     return current;
   }
 
-  if (profile.requireAiming && !trend.allowAssist) {
+  // 常速/快滑/左右平移就位不转；仅 settled | slowSlide | edgeScrub
+  if (profile.requireAiming && !trend.allowRotateAssist) {
+    clearAutoRotateIntent(item);
+    return current;
+  }
+  // 左右平移就位：清意图（想竖着拖到右侧时绝不中途拧横）
+  if (trend.lateralCarry && !trend.edgeScrub && !trend.settled) {
+    clearAutoRotateIntent(item);
+    return current;
+  }
+  // 常速挪：清 dwell
+  if (
+    trend.relocating
+    && !trend.slowSlide
+    && !trend.edgeScrub
+    && !trend.settled
+  ) {
     clearAutoRotateIntent(item);
     return current;
   }
 
-  // 大件：停稳/刷边才评估；最后一块允许慢瞄
-  if (bulk.isLarge && !lastPiece && !trend.hovering && !trend.edgeScrub) {
+  // 大件：须停稳或刷边（慢滑对大件仍偏躁）
+  if (bulk.isLarge && !lastPiece && !trend.settled && !trend.edgeScrub) {
     clearAutoRotateIntent(item);
     return current;
   }
-  if (bulk.isLarge && lastPiece && !trend.allowAssist) {
+  if (bulk.isLarge && lastPiece && !trend.allowRotateAssist) {
     clearAutoRotateIntent(item);
     return current;
   }
@@ -2214,23 +2387,31 @@ function getIntentCandidate(item, worldPosition) {
   }
 
   // ③ 决策置信
-  // unique / snap0 唯一合法：直接进入 dwell
-  // multi：分差；仅当「手指近旁当前也能放」时才对当前保守
-  if (!region.uniqueOtherShapeKey) {
-    let scoreMargin = trend.hovering || trend.edgeScrub
+  // 2A：多朝向须停稳（或刷边/最后一块）；慢滑只做「唯一可放」
+  const multiOrient = !region.uniqueOtherShapeKey;
+  if (
+    multiOrient
+    && autoRotateMultiOrientNeedsSettled
+    && !trend.settled
+    && !trend.edgeScrub
+    && !(lastPiece && lastFill?.needsRotateToFill)
+  ) {
+    clearAutoRotateIntent(item);
+    return current;
+  }
+
+  if (multiOrient) {
+    let scoreMargin = trend.settled || trend.edgeScrub
       ? profile.hoverScoreMargin
       : profile.scoreMargin;
     if (bulk.isLarge) scoreMargin = Math.max(scoreMargin, 0.55);
     if (lastPiece) scoreMargin *= 0.55;
     if (profile.tier === 'small') scoreMargin = Math.max(scoreMargin, 0.42);
-    // 从下往上路过底边：抬高分差，路过不轻易转
     if (trend.dragUpIntoBox && trend.nearBottomEntry) {
       scoreMargin *= 1.35;
     } else if (trend.dragDownFromTop) {
       scoreMargin *= 0.85;
     }
-    // 当前 snap 放不下、或其它朝向更贴手指 → 降低分差门槛
-    // （上拖入箱时仍保留较高门槛，避免「必经底边」误触）
     if (
       !(trend.dragUpIntoBox && trend.nearBottomEntry)
       && (!region.currentSnap0Valid || region.otherCloserThanCurrent || !region.currentFingerViable)
@@ -2242,8 +2423,6 @@ function getIntentCandidate(item, worldPosition) {
       clearAutoRotateIntent(item);
       return current;
     }
-    // 仅当「手指 snap 当前也能放」时才要求明显优于当前。
-    // snap 已红/非法时，R 里远处横放 kick 不应再挡住竖过来。
     if (
       region.currentFingerViable
       && region.currentSnap0Valid
@@ -2280,8 +2459,9 @@ function getIntentCandidate(item, worldPosition) {
 
   let dwellScale = 1;
   if (trend.edgeScrub) dwellScale = profile.dwellScrubScale;
-  else if (trend.hovering) dwellScale = profile.dwellHoverScale;
-  else if (trend.aiming) dwellScale = Math.min(1, profile.dwellHoverScale + 0.2);
+  else if (trend.settled) dwellScale = profile.dwellHoverScale;
+  else if (trend.slowSlide) dwellScale = Math.min(1.15, profile.dwellHoverScale + 0.28);
+  else dwellScale = Math.min(1, profile.dwellHoverScale + 0.2);
   if (bulk.isLarge && !lastPiece) dwellScale *= 1.45;
   if (lastPiece) {
     dwellScale *= 0.42;
@@ -2290,25 +2470,32 @@ function getIntentCandidate(item, worldPosition) {
 
   /**
    * 手势门闩：
-   * - 从下往上 + 底边区域：迟钝（托盘入箱必经，勿抢转）
+   * - 从下往上 + 底边：迟钝
    * - 从上往下：更及时
-   * - 停稳后无上拖趋势：不受上拖惩罚
+   * - 慢滑：比停稳多确认一点（边滑边拧的缓冲）
    */
-  const entryDragUp = trend.dragUpIntoBox && trend.nearBottomEntry && !trend.hovering;
-  const entryDragDown = trend.dragDownFromTop && !trend.hovering;
+  const entryDragUp = trend.dragUpIntoBox && trend.nearBottomEntry && !trend.settled;
+  const entryDragDown = trend.dragDownFromTop && !trend.settled;
   if (entryDragUp) {
     dwellScale *= 1.65;
   } else if (entryDragDown) {
     dwellScale *= 0.82;
   }
+  if (trend.slowSlide && !entryDragUp) {
+    dwellScale *= 1.35;
+  }
 
-  // 区域唯一可放：稍快；但上拖路过底边时不走「秒转」
+  // 唯一可放：停稳稍快；慢滑中等；上拖路过不秒转
   if (region.uniqueOtherShapeKey && !entryDragUp) {
-    dwellScale *= 0.4;
-    if (!region.currentSnap0Valid) dwellScale *= 0.85;
-    dwellScale = Math.min(dwellScale, 0.42);
+    if (trend.settled) {
+      dwellScale *= 0.48;
+      if (!region.currentSnap0Valid) dwellScale *= 0.9;
+      dwellScale = Math.min(dwellScale, 0.5);
+    } else if (trend.slowSlide) {
+      dwellScale *= 0.72;
+      dwellScale = Math.min(dwellScale, 0.95);
+    }
   } else if (region.uniqueOtherShapeKey && entryDragUp) {
-    // 仍可转，但要明显停/慢一点才认
     dwellScale *= 0.85;
     dwellScale = Math.max(dwellScale, 1.05);
   } else if (profile.tier === 'small' && !lastPiece) {
@@ -2384,8 +2571,10 @@ function analyzeRegionPlaceableOrients(
   regionCells = autoRotateSnapLimitCells(regionCells, item.shape);
   if (lastPieceFill) regionCells += 0.45;
   if (lastPieceFill?.needsRotateToFill) regionCells += 0.35;
-  const aimingLike = dragTrend.hovering || dragTrend.edgeScrub
-    || (!pieceBulk.isLarge && dragTrend.aiming);
+  // 区域扩张：停稳最宽；慢滑略宽；常速/快滑不走到这里
+  const aimingLike = dragTrend.settled || dragTrend.edgeScrub
+    || dragTrend.slowSlide
+    || dragTrend.hovering;
   const maxSnapCells = aimingLike
     ? Math.max(regionCells, autoRotateSnapLimitCells(assist.hoverMaxSnapCells, item.shape))
     : Math.max(regionCells * 0.92, autoRotateSnapLimitCells(assist.maxSnapCells, item.shape));
@@ -2444,34 +2633,45 @@ function analyzeRegionPlaceableOrients(
         score -= 0.4;
       }
 
-      // 轻消歧：仅明确刷边时用贴边偏好（被动贴边不再主导）
+      // 轻消歧：仅明确刷边时用贴边偏好
       if (dragTrend.edgeScrub && preferredAxis && longAxis) {
         const edgeW = (pieceBulk.isLarge ? assist.edgeBonus * 0.5 : assist.edgeBonus) * 0.85;
         if (longAxis === preferredAxis) score += edgeW;
         else score -= edgeW * 0.25;
       }
 
-      // 轻消歧：移动方向（够慢才信）
+      /**
+       * 位置贴左/右：偏好竖放；贴上/下：偏好横放（弱，仅停稳/慢滑）。
+       * 修正「往右侧滑就按移动轴拧成横条」。
+       */
+      if (
+        longAxis
+        && (dragTrend.settled || dragTrend.slowSlide || dragTrend.edgeScrub)
+        && !dragTrend.lateralCarry
+      ) {
+        const sideHint = getEdgeAlignmentHint(worldPosition, assist.edgeBand * 1.05);
+        if (sideHint) {
+          const sideW = assist.edgeBonus * 0.4;
+          if (longAxis === sideHint) score += sideW;
+          else score -= sideW * 0.2;
+        }
+      }
+
+      /**
+       * 移动消歧（停稳/刷边才信；不用「移动轴=长轴」——
+       * 左右滑去右侧竖放时 stableAxis=x，旧逻辑会错误偏好横放。
+       * 只保留 approachAxis：往侧边拱 → 轻推竖。
+       */
       const useMotionDir = longAxis
-        && dragTrend.stableAxis
+        && dragTrend.approachAxis
         && (dragTrend.motionConfidence || 0) >= autoRotateMotionConfidenceMin
-        && (
-          dragTrend.hovering
-          || dragTrend.edgeScrub
-          || (
-            dragTrend.aiming
-            && dragTrend.speedCells <= autoRotateMotionDirMaxSpeedCells
-          )
-        );
+        && (dragTrend.settled || dragTrend.edgeScrub)
+        && !dragTrend.lateralCarry;
       if (useMotionDir) {
-        let dirW = autoRotateMotionDirBonus * (assist.motionDirWeight ?? 0.7);
+        let dirW = autoRotateMotionDirBonus * (assist.motionDirWeight ?? 0.7) * 0.55;
         if (pieceBulk.isLarge) dirW *= 0.38;
         const conf = dragTrend.motionConfidence;
-        if (longAxis === dragTrend.stableAxis) score += dirW * conf;
-        else score -= dirW * 0.35 * conf;
-        if (dragTrend.approachAxis && longAxis === dragTrend.approachAxis) {
-          score += dirW * 0.28 * conf;
-        }
+        if (longAxis === dragTrend.approachAxis) score += dirW * conf;
       }
 
       if (finalPlacement && rotation === finalPlacement.rotation) {
@@ -2904,6 +3104,16 @@ function placeItem(item, next, { recordUndo = true } = {}) {
   layoutTrayQueue({ animate: true });
 }
 
+function clearAssistRotateSession(item) {
+  if (!item) return;
+  // 归位后重新计算：须再次进箱才允许帮转
+  item.assistBoxUnlocked = false;
+  item.lastAutoRotationAt = 0;
+  item.assistCommitUntil = 0;
+  item.assistCommitRotation = null;
+  clearAutoRotateIntent(item);
+}
+
 function restoreActiveItem() {
   if (activeItem.wasPlaced && activeItem.previousPlacement) {
     const previous = activeItem.previousPlacement;
@@ -2919,6 +3129,8 @@ function restoreActiveItem() {
     activeItem.mesh.position.y = getBoardItemY(activeItem, boardScale, activeItem.level);
     setItemScale(activeItem, boardScale);
     setItemShadow(activeItem, true);
+    // 放回箱内原位：仍视为在箱体系，下次拿起 beginDrag 会按 placed 解锁
+    clearAutoRotateIntent(activeItem);
     return;
   }
 
@@ -2930,6 +3142,8 @@ function restoreActiveItem() {
   setItemScaleTarget(activeItem, trayScale);
   setItemShadow(activeItem, true);
   activeItem.placed = false;
+  // 归位托盘：进箱解锁清零，下一次须重新进箱才帮转
+  clearAssistRotateSession(activeItem);
 }
 
 function setItemShadow(item, enabled) {
@@ -3052,7 +3266,7 @@ function solveRemainingPlacements() {
 function getSolverCandidates(item, voxelGrid) {
   const candidates = [];
   const seen = new Set();
-  const preferred = getDesignedHintPlacement(item);
+  const preferred = getDesignedHintPlacements(item);
 
   for (let rotation = 0; rotation < 4; rotation += 1) {
     const shape = rotateShape(item.shape, rotation);
@@ -3072,28 +3286,54 @@ function getSolverCandidates(item, voxelGrid) {
     }
   }
 
-  candidates.sort((a, b) => a.priority - b.priority || a.baseLevel - b.baseLevel || a.gy - b.gy || a.gx - b.gx);
+  candidates.sort((a, b) => (
+    a.priority - b.priority
+    || a.baseLevel - b.baseLevel
+    || getHintCandidateCenterDistance(a) - getHintCandidateCenterDistance(b)
+    || getStableHintTieBreak(item, a) - getStableHintTieBreak(item, b)
+  ));
   return candidates;
 }
 
-function getDesignedHintPlacement(item) {
-  if (level.keyItem !== item.id || !level.keyPlacement) return null;
-  return {
-    gx: level.keyPlacement.gx ?? 0,
-    gy: level.keyPlacement.gy ?? 0,
-    baseLevel: level.keyPlacement.level ?? level.keyPlacement.baseLevel ?? 0,
-    rotation: level.keyPlacement.rotation ?? 0
-  };
+function getDesignedHintPlacements(item) {
+  if (level.keyItem !== item.id) return [];
+  const placements = Array.isArray(level.keyPlacements)
+    ? level.keyPlacements
+    : (level.keyPlacement ? [level.keyPlacement] : []);
+
+  return placements.map((placement) => ({
+    gx: placement.gx ?? 0,
+    gy: placement.gy ?? 0,
+    baseLevel: placement.level ?? placement.baseLevel ?? 0,
+    rotation: placement.rotation ?? 0
+  }));
 }
 
-function getHintCandidatePriority(candidate, preferred) {
-  if (!preferred) return 1;
-  return candidate.gx === preferred.gx
+function getHintCandidatePriority(candidate, preferredPlacements) {
+  if (!preferredPlacements.length) return 1;
+  return preferredPlacements.some((preferred) => (
+    candidate.gx === preferred.gx
     && candidate.gy === preferred.gy
     && candidate.baseLevel === preferred.baseLevel
     && candidate.rotation === preferred.rotation
+  ))
     ? 0
     : 1;
+}
+
+function getHintCandidateCenterDistance(candidate) {
+  const centerX = candidate.gx + candidate.shape[0].length / 2;
+  const centerY = candidate.gy + candidate.shape.length / 2;
+  return Math.abs(centerX - grid.cols / 2) + Math.abs(centerY - grid.rows / 2);
+}
+
+function getStableHintTieBreak(item, candidate) {
+  const seed = `${level.id}:${item.id}:${candidate.rotation}:${candidate.baseLevel}:${candidate.gx}:${candidate.gy}`;
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  }
+  return hash;
 }
 
 function getVirtualBaseLevel(voxelGrid, item, gx, gy, shape) {
@@ -3325,6 +3565,8 @@ function undoLastMove() {
     item.lastValid = state.lastValid;
     item.finalIntentPlacement = null;
     item.dragStartRotation = null;
+    if (!item.placed) clearAssistRotateSession(item);
+    else clearAutoRotateIntent(item);
     setItemRotationImmediate(item, item.rotation);
     setItemScale(item, item.placed ? getBoardItemScale() : trayScale);
     setItemShadow(item, true);

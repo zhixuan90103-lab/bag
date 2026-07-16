@@ -68,6 +68,10 @@ export const levels = [
     puzzleIntent: '第三关引入落底后直接顶满高度的物品，让玩家区分高块和普通薄件。',
     keyItem: 'l3-tall',
     keyPlacement: { gx: 0, gy: 0, level: 0, rotation: 0 },
+    keyPlacements: [
+      { gx: 0, gy: 0, level: 0, rotation: 0 },
+      { gx: 1, gy: 0, level: 0, rotation: 0 }
+    ],
     dependencyGraph: [
       { step: 'place tall item on bottom', unlocks: 'side space' },
       { step: 'fill remaining thin pieces', unlocks: 'completion' }
@@ -87,6 +91,10 @@ export const levels = [
     puzzleIntent: '第四关作为过渡：高块先占住一侧，剩余 2×2 区域需要先铺底，再放上层盖板。',
     keyItem: 'l4-tall',
     keyPlacement: { gx: 0, gy: 0, level: 0, rotation: 0 },
+    keyPlacements: [
+      { gx: 0, gy: 0, level: 0, rotation: 0 },
+      { gx: 2, gy: 0, level: 0, rotation: 0 }
+    ],
     dependencyGraph: [
       { step: 'place side tall item', unlocks: '2x2 platform cavity' },
       { step: 'fill platform bottom', unlocks: 'top cover' },
