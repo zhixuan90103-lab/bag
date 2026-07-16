@@ -1904,31 +1904,127 @@ function clearHint() {
 }
 
 function findHintPlacement() {
+  const solution = solveRemainingPlacements();
+  if (!solution) return null;
+
   for (const item of trayQueue.slice(0, trayVisibleCount)) {
     if (item.placed) continue;
-    for (let rotation = 0; rotation < 4; rotation += 1) {
-      const shape = rotateShape(item.shape, rotation);
-      const maxX = grid.cols - shape[0].length;
-      const maxY = grid.rows - shape.length;
-      for (let gy = 0; gy <= maxY; gy += 1) {
-        for (let gx = 0; gx <= maxX; gx += 1) {
-          const placement = getPlacement(item, gx, gy, shape);
-          if (!placement.valid) continue;
-          return {
-            gx,
-            gy,
-            shape,
-            rotation,
-            item,
-            hint: true,
-            inside: true,
-            ...placement
-          };
-        }
+    const target = solution.get(item.id);
+    if (!target) continue;
+    const shape = rotateShape(item.shape, target.rotation);
+    const placement = getPlacement(item, target.gx, target.gy, shape);
+    if (!placement.valid || placement.baseLevel !== target.baseLevel) continue;
+    return {
+      gx: target.gx,
+      gy: target.gy,
+      shape,
+      rotation: target.rotation,
+      item,
+      hint: true,
+      inside: true,
+      ...placement
+    };
+  }
+  return null;
+}
+
+function solveRemainingPlacements() {
+  const voxelGrid = buildVoxelGrid();
+  const remaining = trayQueue.filter((item) => !item.placed);
+  const solution = new Map();
+
+  const solve = (index) => {
+    if (index >= remaining.length) return true;
+    const item = remaining[index];
+    for (const candidate of getSolverCandidates(item, voxelGrid)) {
+      writeVirtualPlacement(voxelGrid, item, candidate, item.id);
+      solution.set(item.id, candidate);
+      if (solve(index + 1)) return true;
+      solution.delete(item.id);
+      writeVirtualPlacement(voxelGrid, item, candidate, null);
+    }
+    return false;
+  };
+
+  return solve(0) ? solution : null;
+}
+
+function getSolverCandidates(item, voxelGrid) {
+  const candidates = [];
+  const seen = new Set();
+  const preferred = getDesignedHintPlacement(item);
+
+  for (let rotation = 0; rotation < 4; rotation += 1) {
+    const shape = rotateShape(item.shape, rotation);
+    const maxX = grid.cols - shape[0].length;
+    const maxY = grid.rows - shape.length;
+    for (let gy = 0; gy <= maxY; gy += 1) {
+      for (let gx = 0; gx <= maxX; gx += 1) {
+        const baseLevel = getVirtualBaseLevel(voxelGrid, item, gx, gy, shape);
+        if (baseLevel === null) continue;
+        const key = `${rotation}:${getPlacementFootprintKey(gx, gy, shape, baseLevel)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const candidate = { gx, gy, baseLevel, rotation, shape };
+        candidate.priority = getHintCandidatePriority(candidate, preferred);
+        candidates.push(candidate);
       }
     }
   }
+
+  candidates.sort((a, b) => a.priority - b.priority || a.baseLevel - b.baseLevel || a.gy - b.gy || a.gx - b.gx);
+  return candidates;
+}
+
+function getDesignedHintPlacement(item) {
+  if (level.keyItem !== item.id || !level.keyPlacement) return null;
+  return {
+    gx: level.keyPlacement.gx ?? 0,
+    gy: level.keyPlacement.gy ?? 0,
+    baseLevel: level.keyPlacement.level ?? level.keyPlacement.baseLevel ?? 0,
+    rotation: level.keyPlacement.rotation ?? 0
+  };
+}
+
+function getHintCandidatePriority(candidate, preferred) {
+  if (!preferred) return 1;
+  return candidate.gx === preferred.gx
+    && candidate.gy === preferred.gy
+    && candidate.baseLevel === preferred.baseLevel
+    && candidate.rotation === preferred.rotation
+    ? 0
+    : 1;
+}
+
+function getVirtualBaseLevel(voxelGrid, item, gx, gy, shape) {
+  const itemHeight = getItemHeight(item);
+  if (!isShapeInsideGrid(gx, gy, shape)) return null;
+
+  for (let baseLevel = 0; baseLevel <= grid.levels - itemHeight; baseLevel += 1) {
+    if (!isVoxelSpaceEmpty(voxelGrid, gx, gy, baseLevel, shape, itemHeight)) continue;
+    if (!hasFullSupport(voxelGrid, gx, gy, baseLevel, shape)) continue;
+    return baseLevel;
+  }
   return null;
+}
+
+function isShapeInsideGrid(gx, gy, shape) {
+  if (gx < 0 || gy < 0) return false;
+  if (gx + shape[0].length > grid.cols) return false;
+  if (gy + shape.length > grid.rows) return false;
+  return true;
+}
+
+function writeVirtualPlacement(voxelGrid, item, candidate, value) {
+  const itemHeight = getItemHeight(item);
+  for (let y = 0; y < candidate.shape.length; y += 1) {
+    for (let x = 0; x < candidate.shape[y].length; x += 1) {
+      if (!candidate.shape[y][x]) continue;
+      for (let level = candidate.baseLevel; level < candidate.baseLevel + itemHeight; level += 1) {
+        voxelGrid[level][candidate.gy + y][candidate.gx + x] = value;
+      }
+    }
+  }
 }
 
 function startHintAutoPlace(hint) {
