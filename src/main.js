@@ -1,25 +1,9 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { currentLevel as level } from './levels.js';
 import './styles.css';
 
-function rectShape(cols, rows) {
-  return Array.from({ length: rows }, () => Array(cols).fill(1));
-}
-
-const level = {
-  box: { cols: 5, rows: 5, cellSize: 0.78 },
-  items: [
-    { id: 'blue-large', label: '蓝块', shape: rectShape(2, 3), color: '#2367d9' },
-    { id: 'red-large', label: '红块', shape: rectShape(3, 2), color: '#e63237' },
-    { id: 'yellow-mid', label: '黄块', shape: rectShape(2, 2), color: '#f2d33c' },
-    { id: 'green-mid', label: '绿块', shape: rectShape(2, 2), color: '#44c06a' },
-    { id: 'teal-box', label: 'BOX', shape: rectShape(2, 2), height: 2, color: '#2ec4b6' },
-    { id: 'purple-bar', label: '紫条', shape: rectShape(1, 3), color: '#9b6ce3' },
-    { id: 'orange-small', label: '橙块', shape: rectShape(1, 2), color: '#f28b2e' }
-  ]
-};
-
-const itemCellSize = 0.78;
+const itemCellSize = level.box.cellSize;
 const trayScale = 0.8;
 const blockHeight = itemCellSize;
 const trayVisibleCount = 3;
@@ -34,11 +18,15 @@ const app = document.querySelector('#app');
 app.innerHTML = `
   <canvas id="game"></canvas>
   <div class="topbar">
-    <div>
+    <div class="order-card">
       <strong>今日订单</strong>
       <span id="status">把所有物品装进箱子</span>
     </div>
-    <button id="resetBtn" aria-label="重置">重置</button>
+    <div class="topbar-actions">
+      <button id="hintBtn" aria-label="提示">提示</button>
+      <button id="undoBtn" aria-label="撤销">撤销</button>
+      <button id="resetBtn" aria-label="重置">重置</button>
+    </div>
   </div>
   <button id="rotateBtn" class="rotate-btn" aria-label="旋转">↻</button>
   <div id="toast" class="toast">订单完成</div>
@@ -95,6 +83,8 @@ const statusEl = document.querySelector('#status');
 const toastEl = document.querySelector('#toast');
 const rotateBtn = document.querySelector('#rotateBtn');
 const resetBtn = document.querySelector('#resetBtn');
+const hintBtn = document.querySelector('#hintBtn');
+const undoBtn = document.querySelector('#undoBtn');
 const cameraControlsEl = document.querySelector('#cameraControls');
 const cameraResetBtn = document.querySelector('#cameraResetBtn');
 const cameraModeSelect = document.querySelector('#cameraModeSelect');
@@ -179,7 +169,7 @@ const grid = {
   cols: level.box.cols,
   rows: level.box.rows,
   cell: level.box.cellSize,
-  levels: 3,
+  levels: level.box.levels,
   levelHeight: itemCellSize,
   width: level.box.cols * level.box.cellSize,
   depth: level.box.rows * level.box.cellSize
@@ -201,6 +191,9 @@ let dragOffset = new THREE.Vector3();
 let candidate = null;
 let completionShown = false;
 let tableMesh = null;
+let undoStack = [];
+let hintPlacement = null;
+let hintMove = null;
 
 initBoard();
 initTray();
@@ -221,6 +214,8 @@ canvas.addEventListener('pointerup', onPointerUp);
 canvas.addEventListener('pointercancel', onPointerUp);
 rotateBtn.addEventListener('click', rotateActiveOrLast);
 resetBtn.addEventListener('click', resetLevel);
+hintBtn.addEventListener('click', showHint);
+undoBtn.addEventListener('click', undoLastMove);
 cameraResetBtn.addEventListener('click', resetCameraRig);
 cameraModeSelect.addEventListener('change', () => {
   cameraRig.mode = cameraModeSelect.value;
@@ -486,9 +481,11 @@ function rotateShape(shape, turns) {
 }
 
 function onPointerDown(event) {
+  if (hintMove) return;
   const picked = pickItem(event);
   if (!picked) return;
   event.preventDefault();
+  clearHint();
   activeItem = picked;
   activeItem.wasPlaced = activeItem.placed;
   activeItem.dragStartRotation = activeItem.rotation;
@@ -760,7 +757,9 @@ function getItemVisualHeight(item) {
   return blockHeight * getItemHeight(item);
 }
 
-function placeItem(item, next) {
+function placeItem(item, next, { recordUndo = true } = {}) {
+  if (recordUndo) pushUndoSnapshot();
+  clearHint();
   item.gridX = next.gx;
   item.gridY = next.gy;
   item.level = next.baseLevel;
@@ -821,15 +820,16 @@ function updateGhost(next) {
   if (!next?.inside) return;
   const cols = next.shape[0].length;
   const rows = next.shape.length;
+  const height = 0.045;
   const ghostColor = next.valid ? '#22c55e' : '#ef4444';
   const mat = new THREE.MeshBasicMaterial({
     color: ghostColor,
     transparent: true,
-    opacity: 0.58,
+    opacity: next.hint ? 0.36 : 0.58,
     depthWrite: false
   });
   const ghost = new THREE.Mesh(
-    new THREE.BoxGeometry(cols * grid.cell - 0.08, 0.045, rows * grid.cell - 0.08),
+    new THREE.BoxGeometry(cols * grid.cell - 0.08, height, rows * grid.cell - 0.08),
     mat
   );
   ghost.position.copy(gridToWorld(next.gx, next.gy, next.shape));
@@ -847,6 +847,123 @@ function updateGhost(next) {
   );
   edge.position.copy(ghost.position);
   ghostGroup.add(edge);
+}
+
+function showHint() {
+  if (activeItem || hintMove) return;
+  const hint = findHintPlacement();
+  if (!hint) {
+    showToast('暂无可放位置');
+    clearHint();
+    return;
+  }
+
+  startHintAutoPlace(hint);
+}
+
+function clearHint() {
+  hintPlacement = null;
+  if (!activeItem) {
+    hideGridGuide();
+    updateGhost(null);
+  }
+}
+
+function findHintPlacement() {
+  for (const item of trayQueue.slice(0, trayVisibleCount)) {
+    if (item.placed) continue;
+    for (let rotation = 0; rotation < 4; rotation += 1) {
+      const shape = rotateShape(item.shape, rotation);
+      const maxX = grid.cols - shape[0].length;
+      const maxY = grid.rows - shape.length;
+      for (let gy = 0; gy <= maxY; gy += 1) {
+        for (let gx = 0; gx <= maxX; gx += 1) {
+          const placement = getPlacement(item, gx, gy, shape);
+          if (!placement.valid) continue;
+          return {
+            gx,
+            gy,
+            shape,
+            rotation,
+            item,
+            hint: true,
+            inside: true,
+            ...placement
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function startHintAutoPlace(hint) {
+  const item = hint.item;
+  if (!item || item.placed) return;
+
+  pushUndoSnapshot();
+  hintPlacement = hint;
+  item.rotation = hint.rotation;
+  setItemRotationTarget(item, item.rotation);
+  item.mesh.visible = true;
+  setItemShadow(item, false);
+  showGridGuide(hint.baseLevel);
+  updateGhost(hint);
+
+  const endPosition = gridToWorld(hint.gx, hint.gy, hint.shape);
+  endPosition.y = getBoardItemY(item, 1, hint.baseLevel);
+
+  hintMove = {
+    item,
+    placement: hint,
+    startTime: performance.now(),
+    duration: 650,
+    startPosition: item.mesh.position.clone(),
+    endPosition,
+    startScale: item.mesh.scale.x,
+    endScale: getBoardItemScale()
+  };
+  showToast('正在演示摆放');
+}
+
+function updateHintMove() {
+  if (!hintMove) return;
+  const {
+    item,
+    placement,
+    startTime,
+    duration,
+    startPosition,
+    endPosition,
+    startScale,
+    endScale
+  } = hintMove;
+  const elapsed = performance.now() - startTime;
+  const t = THREE.MathUtils.clamp(elapsed / duration, 0, 1);
+  const phase = smootherStep(t);
+  const baseY = THREE.MathUtils.lerp(startPosition.y, endPosition.y, phase);
+  const liftHeight = Math.max(0.45, grid.pickupHeight - Math.max(startPosition.y, endPosition.y));
+  item.mesh.position.lerpVectors(startPosition, endPosition, phase);
+  item.mesh.position.y = baseY + Math.sin(Math.PI * phase) * liftHeight;
+
+  const liftScale = Math.sin(Math.PI * phase);
+  const xzScale = THREE.MathUtils.lerp(startScale, endScale, phase) + liftScale * 0.06;
+  const yScale = THREE.MathUtils.lerp(startScale, 1, phase) + liftScale * 0.06;
+  setItemScale(item, xzScale, yScale);
+
+  if (t < 1) return;
+
+  hintMove = null;
+  setItemShadow(item, true);
+  placeItem(item, placement, { recordUndo: false });
+  hideGridGuide();
+  updateGhost(null);
+  refreshStatus();
+}
+
+function smootherStep(t) {
+  const clamped = THREE.MathUtils.clamp(t, 0, 1);
+  return clamped * clamped * clamped * (clamped * (clamped * 6 - 15) + 10);
 }
 
 function rotateActiveOrLast() {
@@ -879,6 +996,9 @@ function rotateActiveOrLast() {
 
 function resetLevel() {
   completionShown = false;
+  undoStack = [];
+  hintMove = null;
+  clearHint();
   toastEl.classList.remove('show');
   trayQueue = [...items];
   for (const item of items) {
@@ -897,6 +1017,77 @@ function resetLevel() {
   }
   layoutTrayQueue({ animate: false });
   hideGridGuide();
+  refreshStatus();
+}
+
+function pushUndoSnapshot() {
+  undoStack.push({
+    completionShown,
+    trayQueueIds: trayQueue.map((item) => item.id),
+    items: items.map((item) => ({
+      id: item.id,
+      rotation: item.rotation,
+      placed: item.placed,
+      gridX: item.gridX,
+      gridY: item.gridY,
+      level: item.level,
+      lastValid: item.lastValid ? { ...item.lastValid } : null
+    }))
+  });
+}
+
+function undoLastMove() {
+  if (hintMove) {
+    showToast('演示中不能撤销');
+    return;
+  }
+  const snapshot = undoStack.pop();
+  if (!snapshot) {
+    showToast('没有可撤销步骤');
+    return;
+  }
+
+  if (activeItem) {
+    restoreActiveItem();
+    activeItem = null;
+    candidate = null;
+  }
+
+  clearHint();
+  completionShown = snapshot.completionShown;
+  toastEl.classList.remove('show');
+  const itemById = new Map(items.map((item) => [item.id, item]));
+  trayQueue = snapshot.trayQueueIds.map((id) => itemById.get(id)).filter(Boolean);
+
+  for (const state of snapshot.items) {
+    const item = itemById.get(state.id);
+    if (!item) continue;
+    item.rotation = state.rotation;
+    item.placed = state.placed;
+    item.gridX = state.gridX;
+    item.gridY = state.gridY;
+    item.level = state.level;
+    item.lastValid = state.lastValid;
+    item.finalIntentPlacement = null;
+    item.dragStartRotation = null;
+    setItemRotationImmediate(item, item.rotation);
+    setItemScale(item, item.placed ? getBoardItemScale() : trayScale, item.placed ? 1 : trayScale);
+    setItemShadow(item, true);
+
+    if (item.placed) {
+      const shape = rotateShape(item.shape, item.rotation);
+      item.mesh.visible = true;
+      item.mesh.position.copy(gridToWorld(item.gridX, item.gridY, shape));
+      item.mesh.position.y = getBoardItemY(item, 1, item.level);
+    } else {
+      item.trayVisible = false;
+      item.targetPosition = null;
+    }
+  }
+
+  layoutTrayQueue({ animate: false });
+  hideGridGuide();
+  updateGhost(null);
   refreshStatus();
 }
 
@@ -949,7 +1140,7 @@ function getTrayItemWidth(item) {
 
 function updateTrayAnimations() {
   for (const item of trayQueue) {
-    if (item.placed || item === activeItem || !item.targetPosition || !item.mesh.visible) continue;
+    if (item.placed || item === activeItem || item === hintMove?.item || !item.targetPosition || !item.mesh.visible) continue;
     item.mesh.position.lerp(item.targetPosition, trayLerpAlpha);
     if (item.mesh.position.distanceToSquared(item.targetPosition) < 0.0001) {
       item.mesh.position.copy(item.targetPosition);
@@ -974,8 +1165,17 @@ function refreshStatus() {
   statusEl.textContent = `${placed}/${items.length} 件已入箱`;
   if (placed === items.length && !completionShown) {
     completionShown = true;
-    toastEl.classList.add('show');
+    showToast('订单完成', 1800);
   }
+}
+
+function showToast(message, duration = 1100) {
+  toastEl.textContent = message;
+  toastEl.classList.add('show');
+  window.clearTimeout(showToast.timer);
+  showToast.timer = window.setTimeout(() => {
+    toastEl.classList.remove('show');
+  }, duration);
 }
 
 function initLightPanel() {
@@ -1219,6 +1419,7 @@ function resize() {
 
 function animate() {
   requestAnimationFrame(animate);
+  updateHintMove();
   updateTrayAnimations();
   updateRotationAnimations();
   renderer.render(scene, camera);

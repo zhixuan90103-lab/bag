@@ -189,7 +189,7 @@ body {
   pointer-events: none;
 }
 
-.topbar > div {
+.order-card {
   min-width: 0;
   padding: 9px 11px;
   border: 1px solid rgba(99, 71, 46, 0.18);
@@ -197,6 +197,13 @@ body {
   background: rgba(255, 251, 243, 0.86);
   box-shadow: 0 8px 24px rgba(82, 58, 35, 0.12);
   backdrop-filter: blur(12px);
+}
+
+.topbar-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  pointer-events: auto;
 }
 
 .topbar strong {
@@ -223,9 +230,12 @@ button {
   box-shadow: 0 8px 24px rgba(65, 88, 190, 0.22);
 }
 
-#resetBtn {
-  width: 56px;
+#resetBtn,
+#hintBtn,
+#undoBtn {
+  width: 52px;
   height: 40px;
+  font-size: 13px;
 }
 
 .rotate-btn {
