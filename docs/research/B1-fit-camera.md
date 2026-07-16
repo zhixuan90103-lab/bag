@@ -9,6 +9,20 @@ generated_by: grok-search
 ---
 # Camera Fitting Techniques in 3D Graphics (Three.js Focus)
 
+> Current project boundary:
+> This file is an archived external research note. It must not be used as the
+> default level adaptation strategy for the Pack project.
+>
+> The current Pack implementation keeps the camera and bottom tray stable.
+> Small levels are enlarged by increasing the real `box.cellSize`, while tray
+> items keep `TRAY_CELL_SIZE = 0.78` and scale only when entering the box.
+> Camera fitting formulas in this file are only useful as emergency reference
+> for very large levels that cannot fit the fixed mobile viewport.
+>
+> Authoritative docs:
+> - `docs/PROJECT_DOCUMENTATION.md`
+> - `docs/research/LEVEL-ADAPTATION-SCHEME.md`
+
 ## Table of Contents
 - [Source 1: How to Fit Camera to Object](https://stackoverflow.com/questions/14614252/how-to-fit-camera-to-object)
 - [Source 2: Move camera to fit 3D scene](https://stackoverflow.com/questions/2866350/move-camera-to-fit-3d-scene)

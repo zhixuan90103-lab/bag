@@ -61,23 +61,16 @@ npm run preview
 
 ### `src/levels.js`
 
-关卡数据文件，当前只有一个关卡：
+关卡数据文件，当前导出多关卡数组：
 
 ```js
-export const currentLevel = levels[0];
+export const levels = [...]
 ```
 
-当前关卡 id：
+当前通过 `src/main.js` 内的 `levelIndex` 和 `level = levels[levelIndex]` 选择关卡。  
+关卡完成后可通过结算面板进入下一关。
 
-```js
-voxel-stack-test
-```
-
-关卡名：
-
-```js
-体素叠放测试
-```
+当前共有 3 关：`2x2x1`、`4x4x2`、`6x6x3`。
 
 ### `src/styles.css`
 
@@ -94,37 +87,15 @@ voxel-stack-test
 
 ## 3. 当前关卡数据
 
-当前关卡定义在 `src/levels.js`。
+当前关卡定义在 `src/levels.js`，共有 3 关：
 
-箱子：
+| 关卡 | id | 名称 | 箱体尺寸 | cellSize | 物品配置 |
+|---:|---|---|---|---:|---|
+| 1 | `small-first-order` | 小单入门 | `2x2x1` | `1.15` | 2 个 `2x1x1` |
+| 2 | `voxel-stack-test` | 体素叠放 | `4x4x2` | `0.78` | 4 个 `2x2x2` |
+| 3 | `stack-tower` | 叠高挑战 | `6x6x3` | `0.78` | 9 个 `2x2x3` |
 
-```js
-box: {
-  cols: 5,
-  rows: 5,
-  levels: 3,
-  cellSize: 0.78
-}
-```
-
-含义：
-
-- 宽度方向 5 格
-- 深度方向 5 格
-- 高度方向 3 层
-- 每格尺寸 `0.78`
-
-当前物品共 7 个：
-
-| id | 名称 | 占地 | 高度 | 颜色 |
-|---|---|---:|---:|---|
-| `blue-large` | 蓝块 | 2x3 | 1 | `#2367d9` |
-| `red-large` | 红块 | 3x2 | 1 | `#e63237` |
-| `yellow-mid` | 黄块 | 2x2 | 1 | `#f2d33c` |
-| `green-mid` | 绿块 | 2x2 | 1 | `#44c06a` |
-| `teal-box` | BOX | 2x2 | 2 | `#2ec4b6` |
-| `purple-bar` | 紫条 | 1x3 | 1 | `#9b6ce3` |
-| `orange-small` | 橙块 | 1x2 | 1 | `#f28b2e` |
+第一关使用更大的 `cellSize`，是为了在不推进摄像机、不改变下方待放区的前提下，让真实 `2x2` 箱子看起来不小。第二、三关使用标准 `0.78` 尺寸。
 
 物品形状通过 `rectShape(cols, rows)` 生成二维矩阵：
 
@@ -134,7 +105,7 @@ function rectShape(cols, rows) {
 }
 ```
 
-当前所有物品都是矩形形状。尚未加入 L、T、Z 等异形矩阵。
+当前所有物品仍是矩形形状。尚未加入 L、T、Z 等异形矩阵。
 
 物品高度规则：
 
@@ -144,14 +115,15 @@ function getItemHeight(item) {
 }
 ```
 
-没有显式 `height` 的物品默认高度为 1。`teal-box` 明确设置为 `height: 2`，所以它是 2x2x2。
+没有显式 `height` 的物品默认高度为 1。当前第二关使用 `height: 2`，第三关使用 `height: 3`，用于验证多层体素摆放。
 
 ## 4. 全局尺寸参数
 
 主尺寸参数在 `src/main.js` 顶部：
 
 ```js
-const itemCellSize = level.box.cellSize;
+const TRAY_CELL_SIZE = 0.78;
+let itemCellSize = TRAY_CELL_SIZE;
 const trayScale = 0.8;
 const blockHeight = itemCellSize;
 const trayVisibleCount = 3;
@@ -165,9 +137,10 @@ const rotationLerpAlpha = 0.12;
 
 含义：
 
-- `itemCellSize`：物品建模时每个格子的基础尺寸，来自关卡 `cellSize`。
+- `TRAY_CELL_SIZE`：下方待放区固定预览格尺寸，不随关卡变化。
+- `itemCellSize`：物品 mesh 建模基准尺寸，固定等于 `TRAY_CELL_SIZE`。
 - `trayScale`：待放区物品缩放，当前为 0.8。
-- `blockHeight`：单层物品高度，等于一个格子的尺寸。
+- `blockHeight`：物品 mesh 原始单层高度，等于 `TRAY_CELL_SIZE`。
 - `trayVisibleCount`：下方最多显示 3 个待放物品。
 - `traySlotXs`：下方 3 个槽位的基础 X 坐标。
 - `trayMinGap`：下方物品之间的最小间距。
@@ -175,6 +148,23 @@ const rotationLerpAlpha = 0.12;
 - `trayEntryOffsetX`：新物品滑入时从右侧偏移的距离。
 - `trayLerpAlpha`：待放区补位动画插值速度。
 - `rotationLerpAlpha`：旋转动画插值速度。
+
+箱内真实格子尺寸来自每关 `box.cellSize`：
+
+```js
+grid.cell = level.box.cellSize;
+grid.levelHeight = grid.cell;
+```
+
+入箱后物品通过 `getBoardItemScale()` 缩放到当前关卡真实尺寸：
+
+```js
+function getBoardItemScale() {
+  return grid.cell / itemCellSize;
+}
+```
+
+这个设计保证下方待放区尺寸固定，但箱内视觉和逻辑完全一致。
 
 ## 5. DOM UI 结构
 
@@ -522,14 +512,28 @@ updateGridHeightGuide(guideLevel);
 
 ## 12. 物品模型
 
-每个物品是一个 `THREE.Group`，内部有一个 `RoundedBoxGeometry`。
+每个物品是一个 `THREE.Mesh`，由统一的 polyomino 圆角挤出管线生成。
 
-创建逻辑：
+当前不再区分“矩形用 `RoundedBoxGeometry`、异形用 `ExtrudeGeometry`”两套方案。所有物品，包括方块、长条、L/J/T/U/拐角等异形，都统一走：
 
 ```js
-const width = item.shape[0].length * itemCellSize - 0.08;
-const depth = item.shape.length * itemCellSize - 0.08;
+createSolidPolyominoGeometry(shape, cellSize, height, inset)
+```
+
+这样做的原因：
+
+- 方形和异形的顶面圆角、侧面倒角、法线和高光更一致。
+- 避免两套几何体在圆角程度、分段数、材质反射上产生视觉差异。
+- 提示 ghost 和真实物品共用同一套脚印几何，边缘一致。
+
+物品尺寸来源：
+
+```js
+const shape = item.shape;
 const height = getItemVisualHeight(item);
+const cellSize = itemCellSize; // 固定 TRAY_CELL_SIZE
+const inset = 0.08;
+const geometry = createSolidPolyominoGeometry(shape, cellSize, height, inset);
 ```
 
 高度：
@@ -540,11 +544,34 @@ function getItemVisualHeight(item) {
 }
 ```
 
-几何体：
+### 12.1 `createSolidPolyominoGeometry`
+
+`createSolidPolyominoGeometry()` 的流程：
+
+1. 从二维 `shape` 0/1 矩阵提取外轮廓。
+2. 将格子角点转换为以物品包围盒中心为原点的 XZ 坐标。
+3. 对外轮廓做轻微内缩，保持与格子之间的视觉留缝。
+4. 对外凸角做圆角处理，内凹角保持稳定，避免 L/J/T 凹口被错误斜切。
+5. 使用 `THREE.ExtrudeGeometry` 挤出高度。
+6. 使用较小 bevel 避免凹多边形 bevel 伪影。
+7. `rotateX(-Math.PI / 2)` 转为 Y-up。
+8. 按 Y 轴居中，使物品底面和高度计算一致。
+
+关键约束：
+
+- 不使用负 `bevelOffset`。Grok 检索和 Three.js issue 显示，凹多边形配合负 `bevelOffset` 容易产生错误面和斜切伪影。
+- 不再为矩形单独创建 `RoundedBoxGeometry`，避免和异形件不一致。
+- `shape` 的逻辑占格不被几何圆角改变，摆放判断仍然基于二维矩阵。
+
+### 12.2 Ghost 几何
+
+红/绿 ghost 仍是薄平面提示，但几何也统一调用：
 
 ```js
-new RoundedBoxGeometry(width, height, depth, 6, 0.08)
+createSolidPolyominoGeometry(shape, grid.cell, 0.045, 0.08)
 ```
+
+因此 ghost 的外轮廓、圆角和真实物品一致，只是高度很薄、材质透明。
 
 材质：
 
@@ -1351,6 +1378,7 @@ user-select: none;
 ```js
 function animate() {
   requestAnimationFrame(animate);
+  updateBoxSequence();
   updateHintMove();
   updateTrayAnimations();
   updateRotationAnimations();
@@ -1360,31 +1388,33 @@ function animate() {
 
 顺序含义：
 
-1. 先更新提示自动摆放动画。
-2. 再更新下方队列补位动画。
-3. 再更新旋转动画。
-4. 最后渲染。
+1. 先更新开箱 / 合箱动画。
+2. 再更新提示自动摆放动画。
+3. 再更新下方队列补位动画。
+4. 再更新旋转动画。
+5. 最后渲染。
 
 正在提示演示的物品会被 `updateTrayAnimations()` 跳过，避免两个动画系统抢同一个物品。
 
 ## 28. 当前实现的约束和注意事项
 
-### 1. 关卡系统刚抽离，尚未做关卡切换 UI
+### 1. 关卡系统已支持三关和下一关
 
-当前只有：
+当前已经有：
 
-```js
-export const currentLevel = levels[0];
-```
+- `levels` 多关卡数组。
+- `levelIndex` 当前关卡索引。
+- `loadLevel(index)` 切关。
+- 结算面板 `nextLevelBtn`。
+- 切关时重建纸箱、物品、状态、相机约束和开箱动画。
 
-后续如果多关，需要增加：
+仍未做的是：
 
-- 当前关卡索引
-- 下一关/上一关
-- 关卡完成后切换
-- 每关独立状态初始化
+- 关卡选择菜单。
+- 关卡解锁/进度保存。
+- 关卡合法性自动校验。
 
-### 2. 异形物品数据结构已经支持，但当前关卡还没有使用
+### 2. 异形物品数据结构已经使用
 
 `shape` 本质是二维 0/1 矩阵，所以可以支持：
 
@@ -1395,7 +1425,7 @@ export const currentLevel = levels[0];
 ]
 ```
 
-但当前所有关卡物品都是矩形。
+当前关卡已经使用拐角、L/J、T、U 等异形脚印。矩形与异形都使用同一套 `createSolidPolyominoGeometry()` 生成，不再分别走两套几何体。
 
 ### 3. 当前体素物品只支持垂直柱状高度
 
@@ -1433,13 +1463,13 @@ dragPlane.constant = -grid.pickupHeight;
 
 当前使用：
 
-- RoundedBoxGeometry
+- 统一 polyomino `ExtrudeGeometry` 圆角挤出管线
 - PCFSoftShadowMap
 - 2048 阴影图
 
 移动端如果物品更多，可能需要优化：
 
-- 降低圆角细分
+- 降低 polyomino 圆角 / bevel 细分
 - 降低阴影质量
 - 使用假阴影
 - 合并静态几何
@@ -1714,19 +1744,24 @@ bf62d6a Expand shadow camera bounds
 
 - `npm run build` 通过。
 - 页面能正常打开。
-- 顶部显示 `0/7 件已入箱`。
+- 顶部显示当前订单，例如 `订单 1/3 · 小单入门`。
 - 下方只显示 3 个物品。
+- 第一关 `2x2x1` 箱子不显得过小，待放物品完整显示。
+- 第二关 `4x4x2` 能正常开箱、摆放、合箱。
+- 第三关 `6x6x3` 箱体和下方 3 个待放物品都完整可见。
 - 手动拖动物品能拿起、移动、放下。
 - 合法位置显示绿色平面。
 - 非法位置显示红色平面。
 - **上层悬空非法时，红框与网格在意图落脚层（非箱底被挡死）。**
-- 2x2x2 BOX 视觉高度正确。
-- 2x2x2 BOX 占用两层高度。
+- 2x2x2 / 2x2x3 物品视觉高度正确。
+- 多高度物品占用对应层数。
 - 上层放置必须完整支撑。
 - 提示按钮会自动演示摆放。
 - 提示动画连续、速度合适。
 - 撤销能回到提示或手动放置前。
 - 重置能恢复初始状态。
+- 下一关按钮能切到后续关卡。
+- 开箱 / 合箱期间点击可跳过。
 - 旋转按钮仍能旋转物品。
 - 移动端横屏会出现竖屏提示。
 - PC 调参面板仍可用。
@@ -1739,3 +1774,7 @@ bf62d6a Expand shadow camera bounds
 | 2026-07-16 | 动态投射平面回滚 | 曾试多层动态平面 + 拖拽物随层升降；手感不佳后完整回滚，拖拽仍固定 `pickupHeight`。 |
 | 2026-07-16 | 开箱 / 合箱第 1 刀 | 前墙 Alpha + 后铰链盖；`gamePhase`: opening→play→closing→settle；开箱先盖后墙、合箱先墙后盖；仪式可点跳过；结算「再来一次」重播开箱。 |
 | 2026-07-16 | RSC 四襟片顶盖 | 整盖改为前/后 major + 左/右 minor 四片；开箱 major→minor 外翻；合箱 minor→major 向中合拢。 |
+| 2026-07-16 | 开箱动画定稿 | 入场落下+顺时针 45° 归正 → major→minor → 前墙+前襟片淡至 0.1；实现笔记 `docs/research/OPEN-BOX-ANIM-IMPL.md`（已入 NotebookLM）。 |
+| 2026-07-16 | 纸箱视觉高度 | `wallHeight = surface + levels*cell + 0.01 + BOX_LID_CLEARANCE(0.14)`，合盖不与顶层摆放物穿插。 |
+| 2026-07-16 | 多关卡相机 fit 修正 | `fitCameraToBox()` 只允许大关卡拉远，不允许小关卡推进；`target/screen` 保持默认，避免下方待放物品被裁切、箱子位置随关卡漂移。 |
+| 2026-07-16 | 小关卡尺寸适配 | 箱内真实 `box.cellSize` 可随关卡变化；下方待放区固定 `TRAY_CELL_SIZE=0.78` 作为预览尺寸。物品入箱时按 `grid.cell / TRAY_CELL_SIZE` 整体缩放，保证逻辑/视觉一致且待放区不变。 |

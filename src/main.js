@@ -1,11 +1,16 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
-import { currentLevel as level } from './levels.js';
+import { levels } from './levels.js';
 import './styles.css';
 
-const itemCellSize = level.box.cellSize;
+let levelIndex = 0;
+let level = levels[levelIndex];
+/** 下方待放区的固定预览格尺寸；不随关卡 cellSize 变化 */
+const TRAY_CELL_SIZE = 0.78;
+/** 物品 mesh 建模基准格：固定为预览尺寸，进入箱内后按 grid.cell 缩放 */
+let itemCellSize = TRAY_CELL_SIZE;
+let blockHeight = itemCellSize;
 const trayScale = 0.8;
-const blockHeight = itemCellSize;
 const trayVisibleCount = 3;
 const traySlotXs = [-1.55, 0, 1.55];
 const trayMinGap = 0.24;
@@ -13,25 +18,45 @@ const trayZ = 4.85;
 const trayEntryOffsetX = 1.15;
 const trayLerpAlpha = 0.18;
 const rotationLerpAlpha = 0.12;
+const autoRotateCooldownMs = 420;
+const autoRotateDwellMs = 260;
+const autoRotateMaxSnapDistanceCells = 0.48;
+const autoRotateSearchRadius = 1;
+/** 拿起/放回时尺寸插值 */
+const scaleLerpAlpha = 0.2;
+/** 拖拽中相对入箱尺寸的略放大，便于对准 */
+const DRAG_SCALE_BOOST = 1.06;
+const CAMERA_FIT_PADDING = 1.22;
 
 /**
  * RSC 四襟片开合时间轴：
- * 开箱：major(前/后) 外翻 → minor(左/右) 外翻 → 前墙淡出
- * 合箱：前墙淡入 → minor 向中合 → major 向中合
+ * 开箱：整箱落下+顺时针 45° 归正 → major 外翻 → minor 外翻 → 前墙+前襟片淡出
+ * 合箱：前墙+前襟片淡入 → minor 向中合 → major 向中合
  */
 const BOX_ANIM = {
-  openMajorMs: 420,
-  openMinorDelayMs: 140,
-  openMinorMs: 400,
-  openFrontDelayMs: 300,
-  openFrontMs: 340,
+  /** 入场：自上落下 + Y 轴顺时针 45° 转到正确面 */
+  introDropMs: 720,
+  introStartY: 4.6,
+  /** 起始 Y 旋转（+45°）；向 0 插值 = 俯视顺时针 45° */
+  introStartRotY: Math.PI / 4,
+  /** 落下时轻微侧倾，落地归零 */
+  introStartTiltX: 0.28,
+  introStartTiltZ: -0.18,
+  openMajorMs: 560,
+  openMinorDelayMs: 200,
+  openMinorMs: 520,
+  /** 相对 intro 结束后的时刻；与 minor 结束对齐 */
+  openFrontDelayMs: 720,
+  openFrontMs: 420,
+  /** 开箱后前墙/前盖保留的透明度（不完全消失） */
+  frontFadeMinAlpha: 0.1,
   closeFrontMs: 320,
   closeMinorDelayMs: 80,
   closeMinorMs: 360,
   closeMajorDelayMs: 260,
   closeMajorMs: 440,
-  /** 襟片外翻角度（rad），约 1.217π ≈ 219°，过水平后再往下贴箱外侧 */
-  flapOpenAngle: Math.PI * 1.05 + Math.PI / 6
+  /** 襟片外翻角度：220°，过水平后再往下贴箱外侧 */
+  flapOpenAngle: THREE.MathUtils.degToRad(220)
 };
 
 const app = document.querySelector('#app');
@@ -39,7 +64,7 @@ app.innerHTML = `
   <canvas id="game"></canvas>
   <div class="topbar">
     <div class="order-card">
-      <strong>今日订单</strong>
+      <strong id="orderTitle">今日订单</strong>
       <span id="status">把所有物品装进箱子</span>
     </div>
     <div class="topbar-actions">
@@ -51,9 +76,12 @@ app.innerHTML = `
   <button id="rotateBtn" class="rotate-btn" aria-label="旋转">↻</button>
   <div id="toast" class="toast">订单完成</div>
   <div id="settlePanel" class="settle-panel" hidden>
-    <strong>订单完成</strong>
-    <span>纸箱已打包好</span>
-    <button id="replayBtn" type="button">再来一次</button>
+    <strong id="settleTitle">订单完成</strong>
+    <span id="settleSub">纸箱已打包好</span>
+    <div class="settle-actions">
+      <button id="nextLevelBtn" type="button">下一关</button>
+      <button id="replayBtn" type="button">再来一次</button>
+    </div>
   </div>
   <div id="orientationGate" class="orientation-gate">
     <div>
@@ -104,9 +132,13 @@ tablePanel.innerHTML = `
 document.body.appendChild(tablePanel);
 
 const canvas = document.querySelector('#game');
+const orderTitleEl = document.querySelector('#orderTitle');
 const statusEl = document.querySelector('#status');
 const toastEl = document.querySelector('#toast');
 const settlePanel = document.querySelector('#settlePanel');
+const settleTitleEl = document.querySelector('#settleTitle');
+const settleSubEl = document.querySelector('#settleSub');
+const nextLevelBtn = document.querySelector('#nextLevelBtn');
 const replayBtn = document.querySelector('#replayBtn');
 const rotateBtn = document.querySelector('#rotateBtn');
 const resetBtn = document.querySelector('#resetBtn');
@@ -192,19 +224,49 @@ const gridGuideGroup = new THREE.Group();
 const gridHeightGuideGroup = new THREE.Group();
 scene.add(boardGroup, trayGroup, ghostGroup, itemGroup);
 
+/** 箱内底面 y（与 base 顶面一致：base.y + 半厚） */
+const BOARD_SURFACE_Y = 0.015 + 0.04;
+/**
+ * 墙顶高于「叠满 levels 后的物品顶」的余量。
+ * 物品顶 ≈ surface + levels*levelHeight + 0.01，若 wallHeight 仅 = levels*cell，
+ * 合盖时襟片会与顶层穿插；余量保证盖在最高堆叠之上。
+ */
+const BOX_LID_CLEARANCE = 0.14;
 const grid = {
-  cols: level.box.cols,
-  rows: level.box.rows,
-  cell: level.box.cellSize,
-  levels: level.box.levels,
+  cols: 1,
+  rows: 1,
+  cell: itemCellSize,
+  levels: 1,
   levelHeight: itemCellSize,
-  width: level.box.cols * level.box.cellSize,
-  depth: level.box.rows * level.box.cellSize
+  width: itemCellSize,
+  depth: itemCellSize,
+  left: 0,
+  top: 0,
+  wallHeight: 1,
+  pickupHeight: 2
 };
-grid.left = -grid.width / 2;
-grid.top = -grid.depth / 2;
-grid.wallHeight = grid.levels * grid.levelHeight;
-grid.pickupHeight = grid.wallHeight + 0.7;
+/** 墙体外侧到箱口内沿的水平偏移（中心线 + 半厚） */
+const WALL_THICKNESS = 0.08;
+const WALL_OFFSET = 0.055;
+const WALL_OUTER = WALL_OFFSET + WALL_THICKNESS / 2;
+
+function applyLevelConfig() {
+  level = levels[levelIndex];
+  grid.cols = level.box.cols;
+  grid.rows = level.box.rows;
+  grid.cell = level.box.cellSize;
+  grid.levels = level.box.levels;
+  grid.levelHeight = grid.cell;
+  grid.width = grid.cols * grid.cell;
+  grid.depth = grid.rows * grid.cell;
+  grid.left = -grid.width / 2;
+  grid.top = -grid.depth / 2;
+  grid.wallHeight =
+    BOARD_SURFACE_Y + grid.levels * grid.levelHeight + 0.01 + BOX_LID_CLEARANCE;
+  grid.pickupHeight = grid.wallHeight + 0.7;
+}
+
+applyLevelConfig();
 
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
@@ -226,18 +288,24 @@ let gamePhase = 'boot';
 let boxAnim = null;
 let frontWall = null;
 let frontWallMat = null;
+/** 前襟片（与前墙一起淡出，不挡俯视装箱） */
+let frontFlap = null;
+let frontFlapMat = null;
 /** RSC 顶盖四襟片铰链：front/back/left/right */
 let flapHinges = { front: null, back: null, left: null, right: null };
 /** 0=合拢 1=全开；动画内可分 major/minor 不同进度 */
 let flapsOpenAmount = 0;
 let frontWallAlpha = 1;
 
-initBoard();
+initTable();
+rebuildBoard();
 initTray();
-initItems();
+rebuildItems();
 initCameraPanel();
 initLightPanel();
 initTablePanel();
+fitCameraToBox();
+updateOrderCard();
 resize();
 startOpeningSequence();
 animate();
@@ -254,6 +322,7 @@ rotateBtn.addEventListener('click', rotateActiveOrLast);
 resetBtn.addEventListener('click', resetLevel);
 hintBtn.addEventListener('click', showHint);
 undoBtn.addEventListener('click', undoLastMove);
+nextLevelBtn.addEventListener('click', goToNextLevel);
 replayBtn.addEventListener('click', resetLevel);
 cameraResetBtn.addEventListener('click', resetCameraRig);
 cameraModeSelect.addEventListener('change', () => {
@@ -263,9 +332,55 @@ cameraModeSelect.addEventListener('change', () => {
 lightResetBtn.addEventListener('click', resetLightRig);
 tableResetBtn.addEventListener('click', resetTableRig);
 
-function initBoard() {
-  const wallThickness = 0.08;
-  const wallOffset = 0.055;
+function disposeObject3D(root) {
+  const geometries = new Set();
+  const materials = new Set();
+  root.traverse((obj) => {
+    if (obj.geometry) geometries.add(obj.geometry);
+    if (obj.material) {
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for (const mat of mats) materials.add(mat);
+    }
+  });
+  for (const geometry of geometries) geometry.dispose();
+  for (const material of materials) material.dispose();
+}
+
+function clearGroup(group) {
+  while (group.children.length > 0) {
+    const child = group.children[0];
+    group.remove(child);
+    disposeObject3D(child);
+  }
+}
+
+function initTable() {
+  tableMesh = new THREE.Mesh(
+    new THREE.BoxGeometry(1, 1, 1),
+    new THREE.MeshStandardMaterial({ color: '#eadac7', roughness: 0.9 })
+  );
+  tableMesh.receiveShadow = true;
+  tableMesh.renderOrder = -1;
+  scene.add(tableMesh);
+  applyTableRig();
+}
+
+/** 按当前 grid 重建纸箱 / 网格引导 / 襟片（桌面不重建） */
+function rebuildBoard() {
+  if (boardGroup.children.includes(gridGuideGroup)) {
+    boardGroup.remove(gridGuideGroup);
+  }
+  clearGroup(boardGroup);
+  clearGroup(gridGuideGroup);
+  clearGroup(gridHeightGuideGroup);
+  gridGuideGroup.add(gridHeightGuideGroup);
+
+  frontWall = null;
+  frontWallMat = null;
+  frontFlap = null;
+  frontFlapMat = null;
+  flapHinges = { front: null, back: null, left: null, right: null };
+
   const wallY = grid.wallHeight / 2;
   const floor = new THREE.Mesh(
     new THREE.BoxGeometry(grid.width + 0.08, 0.18, grid.depth + 0.08),
@@ -284,12 +399,10 @@ function initBoard() {
   boardGroup.add(base);
 
   const wallMat = new THREE.MeshStandardMaterial({ color: '#e69a46', roughness: 0.86 });
-  // 后 / 左 / 右
-  addWall(0, wallY, grid.top - wallOffset, grid.width + 0.14, grid.wallHeight, wallThickness, wallMat);
-  addWall(grid.left - wallOffset, wallY, 0, wallThickness, grid.wallHeight, grid.depth + 0.14, wallMat);
-  addWall(-grid.left + wallOffset, wallY, 0, wallThickness, grid.wallHeight, grid.depth + 0.14, wallMat);
+  addWall(0, wallY, grid.top - WALL_OFFSET, grid.width + 0.14, grid.wallHeight, WALL_THICKNESS, wallMat);
+  addWall(grid.left - WALL_OFFSET, wallY, 0, WALL_THICKNESS, grid.wallHeight, grid.depth + 0.14, wallMat);
+  addWall(-grid.left + WALL_OFFSET, wallY, 0, WALL_THICKNESS, grid.wallHeight, grid.depth + 0.14, wallMat);
 
-  // 前墙（朝相机 / +Z）：开箱后淡出，合箱前淡入
   frontWallMat = new THREE.MeshStandardMaterial({
     color: '#e69a46',
     roughness: 0.86,
@@ -298,21 +411,19 @@ function initBoard() {
     depthWrite: true
   });
   frontWall = new THREE.Mesh(
-    new THREE.BoxGeometry(grid.width + 0.14, grid.wallHeight, wallThickness),
+    new THREE.BoxGeometry(grid.width + 0.14, grid.wallHeight, WALL_THICKNESS),
     frontWallMat
   );
-  frontWall.position.set(0, wallY, grid.top + grid.depth + wallOffset);
+  frontWall.position.set(0, wallY, grid.top + grid.depth + WALL_OFFSET);
   frontWall.castShadow = true;
   frontWall.receiveShadow = true;
   boardGroup.add(frontWall);
 
-  // RSC 顶盖：四片襟片，合拢时向箱口中心折合
   createRscFlaps();
   setFlapsOpenAmount(0);
   setFrontWallAlpha(1);
 
   boardGroup.add(gridGuideGroup);
-  gridGuideGroup.add(gridHeightGuideGroup);
   hideGridGuide();
   const guideFill = new THREE.Mesh(
     new THREE.PlaneGeometry(grid.width, grid.depth),
@@ -351,18 +462,153 @@ function initBoard() {
   addLine(grid.left + grid.width, grid.top + grid.depth, grid.left, grid.top + grid.depth, borderMat);
   addLine(grid.left, grid.top + grid.depth, grid.left, grid.top, borderMat);
 
-  tableMesh = new THREE.Mesh(
-    new THREE.BoxGeometry(1, 1, 1),
-    new THREE.MeshStandardMaterial({ color: '#eadac7', roughness: 0.9 })
-  );
-  tableMesh.receiveShadow = true;
-  scene.add(tableMesh);
-  tableMesh.renderOrder = -1;
-  applyTableRig();
+  resetBoxRigPose();
 }
 
 function initTray() {
   trayGroup.clear();
+}
+
+function releasePointerCaptureSafe() {
+  try {
+    canvas.releasePointerCapture?.();
+  } catch {
+    /* ignore */
+  }
+}
+
+function stopGameplayInteraction() {
+  if (activeItem) {
+    releasePointerCaptureSafe();
+    activeItem = null;
+    candidate = null;
+  }
+  clearHint();
+  hintMove = null;
+  hideGridGuide();
+  updateGhost(null);
+  boxAnim = null;
+  toastEl.classList.remove('show');
+  hideSettlePanel();
+}
+
+function updateOrderCard() {
+  const total = levels.length;
+  const n = levelIndex + 1;
+  orderTitleEl.textContent = `订单 ${n}/${total} · ${level.name}`;
+}
+
+function showSettlePanel() {
+  const isLast = levelIndex >= levels.length - 1;
+  settleTitleEl.textContent = isLast ? '全部订单完成' : '订单完成';
+  settleSubEl.textContent = isLast
+    ? `第 ${levelIndex + 1}/${levels.length} 关 · ${level.name}`
+    : `第 ${levelIndex + 1}/${levels.length} 关 · ${level.name}`;
+  nextLevelBtn.hidden = isLast;
+  nextLevelBtn.textContent = isLast ? '已通关' : '下一关';
+  settlePanel.hidden = false;
+}
+
+function hideSettlePanel() {
+  settlePanel.hidden = true;
+}
+
+/**
+ * 按箱体 AABB + FOV 计算合适的 cameraRig.distance / target。
+ * 保持默认俯视方向（来自 defaultCameraRig 的 x,y,z 相对 target）。
+ */
+function fitCameraToBox() {
+  const appRect = app.getBoundingClientRect();
+  const width = Math.max(1, Math.round(appRect.width || window.innerWidth));
+  const height = Math.max(1, Math.round(appRect.height || window.innerHeight));
+  const aspect = width / height;
+  const fovV = THREE.MathUtils.degToRad(cameraRig.fov || defaultCameraRig.fov);
+  const fitHeight = Math.max(grid.wallHeight + 0.8, grid.depth * 0.55 + grid.wallHeight * 0.35);
+  const fitWidth = Math.max(grid.width, grid.depth) + 0.85;
+  const distV = (fitHeight / 2) / Math.tan(fovV / 2);
+  const fovH = 2 * Math.atan(Math.tan(fovV / 2) * aspect);
+  const distH = (fitWidth / 2) / Math.tan(fovH / 2);
+  const distance = Math.max(distV, distH) * CAMERA_FIT_PADDING;
+
+  cameraRig.mode = 'perspective';
+  cameraModeSelect.value = 'perspective';
+  cameraRig.fov = defaultCameraRig.fov;
+  // 只在箱体过大时拉远，不因小关卡自动推进相机。
+  // 待放物品区使用固定世界坐标，过度推进会把下方 3 个物品裁出屏幕。
+  cameraRig.distance = THREE.MathUtils.clamp(
+    Math.max(defaultCameraRig.distance, distance),
+    defaultCameraRig.distance,
+    24
+  );
+  cameraRig.targetX = defaultCameraRig.targetX;
+  cameraRig.targetY = defaultCameraRig.targetY;
+  cameraRig.targetZ = defaultCameraRig.targetZ;
+  // 保持默认俯视方位和屏幕平移，避免切关后箱子在画面中漂移
+  cameraRig.x = defaultCameraRig.x;
+  cameraRig.y = defaultCameraRig.y;
+  cameraRig.z = defaultCameraRig.z;
+  cameraRig.screenX = defaultCameraRig.screenX;
+  cameraRig.screenY = defaultCameraRig.screenY;
+  applyCameraRig();
+  if (cameraControlsEl) {
+    for (const input of cameraControlsEl.querySelectorAll('[data-camera-key]')) {
+      const key = input.dataset.cameraKey;
+      if (cameraRig[key] === undefined) continue;
+      input.value = cameraRig[key];
+      syncCameraPanelValue(key);
+    }
+  }
+}
+
+function rebuildItems() {
+  clearGroup(itemGroup);
+  items = level.items.map((data) => {
+    const item = {
+      ...data,
+      rotation: 0,
+      placed: false,
+      gridX: null,
+      gridY: null,
+      level: null,
+      lastValid: null,
+      trayVisible: false,
+      targetPosition: null,
+      targetRotationY: 0,
+      mesh: createItemMesh(data)
+    };
+    item.mesh.userData.item = item;
+    setItemScale(item, trayScale);
+    itemGroup.add(item.mesh);
+    return item;
+  });
+  trayQueue = [...items];
+  layoutTrayQueue({ animate: false });
+  refreshStatus();
+}
+
+/** 切关：应用关卡配置 → 重建箱体/物品 → 相机 fit → 开箱 */
+function loadLevel(index, { open = true } = {}) {
+  if (index < 0 || index >= levels.length) return false;
+  stopGameplayInteraction();
+  levelIndex = index;
+  applyLevelConfig();
+  rebuildBoard();
+  rebuildItems();
+  undoStack = [];
+  completionShown = false;
+  gamePhase = 'boot';
+  fitCameraToBox();
+  updateOrderCard();
+  if (open) startOpeningSequence();
+  return true;
+}
+
+function goToNextLevel() {
+  if (levelIndex >= levels.length - 1) {
+    showToast('已经是最后一关');
+    return;
+  }
+  loadLevel(levelIndex + 1);
 }
 
 function addTrayWall(x, y, z, w, h, d, mat) {
@@ -459,25 +705,43 @@ function hideGridGuide() {
  * 创建 RSC 四襟片。
  * major（前/后）：各盖住约一半 depth，合拢时在中缝相遇。
  * minor（左/右）：各盖住约一半 width，合拢时略低于 major，模拟压在 major 下面。
+ *
+ * 铰链在墙体外沿（WALL_OUTER）：外翻后板体贴墙，不穿墙。
+ * 板底面落在枢轴平面（无 hingeGap），开合过程折缝不露空。
  */
 function createRscFlaps() {
   const flapMat = new THREE.MeshStandardMaterial({ color: '#d8893a', roughness: 0.88 });
-  const flapT = 0.055;
-  const majorLen = Math.max(grid.depth * 0.5 - 0.03, 0.2);
-  const minorLen = Math.max(grid.width * 0.5 - 0.03, 0.2);
-  const yMajor = grid.wallHeight + 0.02;
-  const yMinor = grid.wallHeight + 0.008;
-  const zBack = grid.top;
-  const zFront = grid.top + grid.depth;
+  // 前襟片独立材质：开箱后与前墙同步淡出
+  frontFlapMat = new THREE.MeshStandardMaterial({
+    color: '#d8893a',
+    roughness: 0.88,
+    transparent: true,
+    opacity: 1,
+    depthWrite: true
+  });
+  const flapT = 0.05;
+  // 中缝极小重叠，避免动画中透出箱内
+  const seam = 0.008;
+  // 枢轴在外沿 → 板长覆盖到中线略过缝
+  const majorLen = Math.max(grid.depth * 0.5 + WALL_OUTER - seam, 0.2);
+  const minorLen = Math.max(grid.width * 0.5 + WALL_OUTER - seam, 0.2);
+  // 横宽盖住箱口并略压墙顶内沿，打开后仍在邻墙外角以内
+  const majorWidth = grid.width + WALL_OFFSET * 0.6;
+  const minorDepth = grid.depth + WALL_OFFSET * 0.6;
+  // 底面贴枢轴，枢轴略高于墙顶，旋转时厚板不切墙
+  const yMajor = grid.wallHeight + 0.012;
+  const yMinor = grid.wallHeight + 0.006;
+  const zBack = grid.top - WALL_OUTER;
+  const zFront = grid.top + grid.depth + WALL_OUTER;
   const zMid = grid.top + grid.depth / 2;
-  const xLeft = grid.left;
-  const xRight = grid.left + grid.width;
+  const xLeft = grid.left - WALL_OUTER;
+  const xRight = grid.left + grid.width + WALL_OUTER;
 
-  // 后襟片：铰链在后边，板伸向 +Z（箱心）
+  // 后襟片：铰链在后墙外沿，板伸向 +Z（箱心）
   const backHinge = new THREE.Group();
   backHinge.position.set(0, yMajor, zBack);
   const backFlap = new THREE.Mesh(
-    new THREE.BoxGeometry(grid.width + 0.08, flapT, majorLen),
+    new THREE.BoxGeometry(majorWidth, flapT, majorLen),
     flapMat
   );
   backFlap.position.set(0, flapT / 2, majorLen / 2);
@@ -486,12 +750,12 @@ function createRscFlaps() {
   backHinge.add(backFlap);
   boardGroup.add(backHinge);
 
-  // 前襟片：铰链在前边，板伸向 -Z（箱心）
+  // 前襟片：铰链在前墙外沿，板伸向 -Z（箱心）；材质可独立淡出
   const frontHinge = new THREE.Group();
   frontHinge.position.set(0, yMajor, zFront);
-  const frontFlap = new THREE.Mesh(
-    new THREE.BoxGeometry(grid.width + 0.08, flapT, majorLen),
-    flapMat
+  frontFlap = new THREE.Mesh(
+    new THREE.BoxGeometry(majorWidth, flapT, majorLen),
+    frontFlapMat
   );
   frontFlap.position.set(0, flapT / 2, -majorLen / 2);
   frontFlap.castShadow = true;
@@ -499,11 +763,11 @@ function createRscFlaps() {
   frontHinge.add(frontFlap);
   boardGroup.add(frontHinge);
 
-  // 左襟片：铰链在左边，板伸向 +X
+  // 左襟片：铰链在左墙外沿，板伸向 +X
   const leftHinge = new THREE.Group();
   leftHinge.position.set(xLeft, yMinor, zMid);
   const leftFlap = new THREE.Mesh(
-    new THREE.BoxGeometry(minorLen, flapT, grid.depth + 0.04),
+    new THREE.BoxGeometry(minorLen, flapT, minorDepth),
     flapMat
   );
   leftFlap.position.set(minorLen / 2, flapT / 2, 0);
@@ -512,11 +776,11 @@ function createRscFlaps() {
   leftHinge.add(leftFlap);
   boardGroup.add(leftHinge);
 
-  // 右襟片：铰链在右边，板伸向 -X
+  // 右襟片：铰链在右墙外沿，板伸向 -X
   const rightHinge = new THREE.Group();
   rightHinge.position.set(xRight, yMinor, zMid);
   const rightFlap = new THREE.Mesh(
-    new THREE.BoxGeometry(minorLen, flapT, grid.depth + 0.04),
+    new THREE.BoxGeometry(minorLen, flapT, minorDepth),
     flapMat
   );
   rightFlap.position.set(-minorLen / 2, flapT / 2, 0);
@@ -551,34 +815,49 @@ function setFlapsOpenAmount(t) {
   setMinorFlapsOpen(flapsOpenAmount);
 }
 
-function setFrontWallAlpha(alpha) {
-  frontWallAlpha = THREE.MathUtils.clamp(alpha, 0, 1);
-  if (!frontWall || !frontWallMat) return;
-  if (frontWallAlpha <= 0.02) {
-    frontWall.visible = false;
-    frontWallMat.opacity = 0;
-    frontWallMat.transparent = true;
-    frontWallMat.depthWrite = false;
-    return;
-  }
-  frontWall.visible = true;
-  const solid = frontWallAlpha >= 0.98;
-  frontWallMat.transparent = !solid;
-  frontWallMat.opacity = solid ? 1 : frontWallAlpha;
-  frontWallMat.depthWrite = solid;
-  frontWallMat.needsUpdate = true;
+/**
+ * 前墙 + 前襟片同步透明度。
+ * t=1 全实，t=0 为开箱后的「幽灵」态（保留 frontFadeMinAlpha，不完全消失）。
+ */
+function setFrontWallAlpha(t) {
+  const u = THREE.MathUtils.clamp(t, 0, 1);
+  const minA = BOX_ANIM.frontFadeMinAlpha;
+  frontWallAlpha = THREE.MathUtils.lerp(minA, 1, u);
+  applyFrontFadeMesh(frontWall, frontWallMat, frontWallAlpha);
+  applyFrontFadeMesh(frontFlap, frontFlapMat, frontWallAlpha);
+}
+
+function applyFrontFadeMesh(mesh, mat, alpha) {
+  if (!mesh || !mat) return;
+  mesh.visible = true;
+  mesh.castShadow = alpha >= 0.5;
+  const solid = alpha >= 0.98;
+  mat.transparent = !solid;
+  mat.opacity = solid ? 1 : alpha;
+  mat.depthWrite = solid;
+  mat.needsUpdate = true;
 }
 
 function isGameplayLocked() {
   return gamePhase !== 'play' || Boolean(hintMove);
 }
 
-function hideSettlePanel() {
-  settlePanel.hidden = true;
+/** 整箱入场姿态：t=0 空中歪斜，t=1 落地归正 */
+function setBoxIntroPose(t) {
+  const a = THREE.MathUtils.clamp(t, 0, 1);
+  // 下落用 ease-out，尾段轻弹一下更像砸桌
+  const dropEase = 1 - Math.pow(1 - a, 3);
+  const bounce = a < 0.82 ? 0 : Math.sin(((a - 0.82) / 0.18) * Math.PI) * 0.12 * (1 - a);
+  const spinEase = smootherStep(a);
+  boardGroup.position.y = THREE.MathUtils.lerp(BOX_ANIM.introStartY, 0, dropEase) + bounce;
+  boardGroup.rotation.y = THREE.MathUtils.lerp(BOX_ANIM.introStartRotY, 0, spinEase);
+  boardGroup.rotation.x = THREE.MathUtils.lerp(BOX_ANIM.introStartTiltX, 0, spinEase);
+  boardGroup.rotation.z = THREE.MathUtils.lerp(BOX_ANIM.introStartTiltZ, 0, spinEase);
 }
 
-function showSettlePanel() {
-  settlePanel.hidden = false;
+function resetBoxRigPose() {
+  boardGroup.position.set(0, 0, 0);
+  boardGroup.rotation.set(0, 0, 0);
 }
 
 function startOpeningSequence() {
@@ -595,6 +874,7 @@ function startOpeningSequence() {
   gamePhase = 'opening';
   setFlapsOpenAmount(0);
   setFrontWallAlpha(1);
+  setBoxIntroPose(0);
   boxAnim = { kind: 'opening', startedAt: performance.now() };
   statusEl.textContent = '开箱中…';
 }
@@ -624,6 +904,7 @@ function skipBoxSequence() {
 
 function finishOpeningSequence() {
   boxAnim = null;
+  resetBoxRigPose();
   setFlapsOpenAmount(1);
   setFrontWallAlpha(0);
   gamePhase = 'play';
@@ -632,6 +913,7 @@ function finishOpeningSequence() {
 
 function finishClosingSequence() {
   boxAnim = null;
+  resetBoxRigPose();
   setFlapsOpenAmount(0);
   setFrontWallAlpha(1);
   gamePhase = 'settle';
@@ -645,27 +927,38 @@ function updateBoxSequence(now = performance.now()) {
   const elapsed = now - boxAnim.startedAt;
 
   if (boxAnim.kind === 'opening') {
-    // major 先外翻，minor 稍后，前墙再淡出
-    const majorT = smootherStep(elapsed / BOX_ANIM.openMajorMs);
+    const introMs = BOX_ANIM.introDropMs;
+    // 1) 整箱落下 + 顺时针 45° 归正；2) 再开襟片
+    if (elapsed < introMs) {
+      setBoxIntroPose(elapsed / introMs);
+      setFlapsOpenAmount(0);
+      setFrontWallAlpha(1);
+      return;
+    }
+    setBoxIntroPose(1);
+
+    const openElapsed = elapsed - introMs;
+    // major 先外翻 → minor 外翻 → 前墙+前襟片淡出（无停顿）
+    const majorT = smootherStep(openElapsed / BOX_ANIM.openMajorMs);
     setMajorFlapsOpen(majorT);
-    const minorElapsed = elapsed - BOX_ANIM.openMinorDelayMs;
+    const minorElapsed = openElapsed - BOX_ANIM.openMinorDelayMs;
     const minorT = minorElapsed <= 0 ? 0 : smootherStep(minorElapsed / BOX_ANIM.openMinorMs);
     setMinorFlapsOpen(minorT);
     flapsOpenAmount = Math.max(majorT, minorT);
-    const frontElapsed = elapsed - BOX_ANIM.openFrontDelayMs;
+    const frontElapsed = openElapsed - BOX_ANIM.openFrontDelayMs;
     const frontT = frontElapsed <= 0 ? 0 : smootherStep(frontElapsed / BOX_ANIM.openFrontMs);
     setFrontWallAlpha(1 - frontT);
-    const doneAt = Math.max(
+    const openDoneAt = Math.max(
       BOX_ANIM.openMajorMs,
       BOX_ANIM.openMinorDelayMs + BOX_ANIM.openMinorMs,
       BOX_ANIM.openFrontDelayMs + BOX_ANIM.openFrontMs
     );
-    if (elapsed >= doneAt) finishOpeningSequence();
+    if (openElapsed >= openDoneAt) finishOpeningSequence();
     return;
   }
 
   if (boxAnim.kind === 'closing') {
-    // 前墙先回，再 minor 合拢，最后 major 合拢（贴近真箱封顶顺序）
+    // 前墙+前襟片先回，再 minor 合拢，最后 major 合拢（贴近真箱封顶顺序）
     const frontT = smootherStep(elapsed / BOX_ANIM.closeFrontMs);
     setFrontWallAlpha(frontT);
     const minorElapsed = elapsed - BOX_ANIM.closeMinorDelayMs;
@@ -684,67 +977,302 @@ function updateBoxSequence(now = performance.now()) {
   }
 }
 
-function initItems() {
-  items = level.items.map((data) => {
-    const item = {
-      ...data,
-      rotation: 0,
-      placed: false,
-      gridX: null,
-      gridY: null,
-      level: null,
-      lastValid: null,
-      trayVisible: false,
-      targetPosition: null,
-      targetRotationY: 0,
-      mesh: createItemMesh(data)
+/** 脚印是否在包围盒内全部占满（可用单块圆角盒） */
+function isSolidRectShape(shape) {
+  if (!shape?.length || !shape[0]?.length) return false;
+  for (let y = 0; y < shape.length; y += 1) {
+    for (let x = 0; x < shape[y].length; x += 1) {
+      if (!shape[y][x]) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * 提取 polyomino 外轮廓（网格角点，逆时针）。
+ * 角点坐标：列 x ∈ [0, cols]，行 y ∈ [0, rows]。
+ */
+function extractPolyominoOutline(shape) {
+  const cols = shape[0].length;
+  const rows = shape.length;
+  const occ = (x, y) =>
+    x >= 0 && y >= 0 && x < cols && y < rows && !!shape[y][x];
+
+  /** @type {Map<string, Array<{x:number,y:number}>>} */
+  const adj = new Map();
+  const addEdge = (x1, y1, x2, y2) => {
+    const k = `${x1},${y1}`;
+    if (!adj.has(k)) adj.set(k, []);
+    adj.get(k).push({ x: x2, y: y2 });
+  };
+
+  // 仅外边界；方向使整体为 CCW（Shape 正面）
+  for (let y = 0; y < rows; y += 1) {
+    for (let x = 0; x < cols; x += 1) {
+      if (!occ(x, y)) continue;
+      if (!occ(x, y - 1)) addEdge(x, y, x + 1, y);
+      if (!occ(x + 1, y)) addEdge(x + 1, y, x + 1, y + 1);
+      if (!occ(x, y + 1)) addEdge(x + 1, y + 1, x, y + 1);
+      if (!occ(x - 1, y)) addEdge(x, y + 1, x, y);
+    }
+  }
+
+  if (adj.size === 0) return [];
+
+  // 凹角顶点可能有多条出边：优先左转（CCW）
+  const turnScore = (from, via, to) => {
+    const ax = via.x - from.x;
+    const ay = via.y - from.y;
+    const bx = to.x - via.x;
+    const by = to.y - via.y;
+    return ax * by - ay * bx;
+  };
+
+  const startKey = adj.keys().next().value;
+  const [sx, sy] = startKey.split(',').map(Number);
+  const loop = [{ x: sx, y: sy }];
+  let prev = { x: sx - 1, y: sy };
+  let cur = { x: sx, y: sy };
+  const used = new Set();
+
+  for (let guard = 0; guard < 4096; guard += 1) {
+    const opts = adj.get(`${cur.x},${cur.y}`) || [];
+    let best = null;
+    let bestScore = -Infinity;
+    for (const n of opts) {
+      const ek = `${cur.x},${cur.y}->${n.x},${n.y}`;
+      if (used.has(ek)) continue;
+      const score = turnScore(prev, cur, n);
+      if (score > bestScore) {
+        bestScore = score;
+        best = n;
+      }
+    }
+    if (!best) break;
+    used.add(`${cur.x},${cur.y}->${best.x},${best.y}`);
+    prev = cur;
+    cur = best;
+    if (cur.x === sx && cur.y === sy) break;
+    loop.push({ x: cur.x, y: cur.y });
+  }
+
+  return loop;
+}
+
+/** 轴对齐多边形内缩（CCW 环，沿边内法线偏移 dist） */
+function insetAxisAlignedPolygon(points, dist) {
+  if (dist <= 1e-8) return points.map((p) => ({ x: p.x, y: p.y }));
+  const n = points.length;
+  if (n < 3) return points.map((p) => ({ x: p.x, y: p.y }));
+
+  const offsetEdges = [];
+  for (let i = 0; i < n; i += 1) {
+    const a = points[i];
+    const b = points[(i + 1) % n];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    // CCW 内法线（指向多边形内部）
+    const nx = -dy / len;
+    const ny = dx / len;
+    offsetEdges.push({
+      x1: a.x + nx * dist,
+      y1: a.y + ny * dist,
+      x2: b.x + nx * dist,
+      y2: b.y + ny * dist
+    });
+  }
+
+  const out = [];
+  for (let i = 0; i < n; i += 1) {
+    const e0 = offsetEdges[(i - 1 + n) % n];
+    const e1 = offsetEdges[i];
+    const den = (e0.x1 - e0.x2) * (e1.y1 - e1.y2) - (e0.y1 - e0.y2) * (e1.x1 - e1.x2);
+    if (Math.abs(den) < 1e-10) {
+      out.push({ x: e1.x1, y: e1.y1 });
+      continue;
+    }
+    const t =
+      ((e0.x1 - e1.x1) * (e1.y1 - e1.y2) - (e0.y1 - e1.y1) * (e1.x1 - e1.x2)) / den;
+    out.push({
+      x: e0.x1 + t * (e0.x2 - e0.x1),
+      y: e0.y1 + t * (e0.y2 - e0.y1)
+    });
+  }
+  return out;
+}
+
+function roundedAxisAlignedShape(points, radius) {
+  const shape2d = new THREE.Shape();
+  const n = points.length;
+  if (n < 3 || radius <= 0) {
+    shape2d.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i += 1) {
+      shape2d.lineTo(points[i].x, points[i].y);
+    }
+    shape2d.closePath();
+    return shape2d;
+  }
+
+  const corner = (index) => {
+    const prev = points[(index - 1 + n) % n];
+    const p = points[index];
+    const next = points[(index + 1) % n];
+    const inLen = Math.hypot(prev.x - p.x, prev.y - p.y) || 1;
+    const outLen = Math.hypot(next.x - p.x, next.y - p.y) || 1;
+    const ax = p.x - prev.x;
+    const ay = p.y - prev.y;
+    const bx = next.x - p.x;
+    const by = next.y - p.y;
+    const isConvex = ax * by - ay * bx > 0;
+    // 只圆滑外凸角。内凹角如果也用二次曲线连接，会在 L/J/T 的凹口处产生斜切面。
+    const r = isConvex ? Math.min(radius, inLen * 0.42, outLen * 0.42) : 0;
+    return {
+      p,
+      start: {
+        x: p.x + (prev.x - p.x) / inLen * r,
+        y: p.y + (prev.y - p.y) / inLen * r
+      },
+      end: {
+        x: p.x + (next.x - p.x) / outLen * r,
+        y: p.y + (next.y - p.y) / outLen * r
+      }
     };
-    item.mesh.userData.item = item;
-    setItemScale(item, trayScale);
-    itemGroup.add(item.mesh);
-    return item;
+  };
+
+  const first = corner(0);
+  shape2d.moveTo(first.end.x, first.end.y);
+  for (let i = 1; i <= n; i += 1) {
+    const c = corner(i % n);
+    shape2d.lineTo(c.start.x, c.start.y);
+    shape2d.quadraticCurveTo(c.p.x, c.p.y, c.end.x, c.end.y);
+  }
+  shape2d.closePath();
+  return shape2d;
+}
+
+/**
+ * L/T/拐角等：外轮廓挤出 + 内向倒角 → 单块圆角实心。
+ * 尺寸对齐第一关 RoundedBox：脚印 = 格尺寸 − inset，倒角不向外撑体积。
+ */
+function createSolidPolyominoGeometry(shape, cellSize, height, inset = 0.08) {
+  const cols = shape[0].length;
+  const rows = shape.length;
+  const outline = extractPolyominoOutline(shape);
+
+  if (outline.length < 3) {
+    return new RoundedBoxGeometry(
+      Math.max(cellSize - inset, 0.05),
+      height,
+      Math.max(cellSize - inset, 0.05),
+      6,
+      0.06
+    );
+  }
+
+  // 1) 脚印精确落在逻辑格上（与 place 的 footprint 一致）
+  // 2) 再整体内缩 inset/2，与矩形 width = n*cell - inset 一致
+  // 3) y 取负：配合 rotateX(-π/2) 后 +row → +Z
+  let pts = outline.map((p) => ({
+    x: (p.x - cols / 2) * cellSize,
+    y: -((p.y - rows / 2) * cellSize)
+  }));
+  // y 翻转后环绕方向取反 → reverse 保持 CCW，便于内缩法线向内
+  pts = pts.reverse();
+  pts = insetAxisAlignedPolygon(pts, inset * 0.3);
+
+  // 与 RoundedBox 相同的圆角预算：圆角吃进轮廓内部，不向外加体积
+  const radius = Math.min(0.08, cellSize * 0.14, height * 0.22);
+  const bevelSize = radius * 0.35;
+  // Three.js ExtrudeGeometry 对凹多边形配合负 bevelOffset 有已知错误面问题。
+  // 这里提前额外内缩轮廓，使用默认 bevelOffset=0，避免 J/L/T 形状出现斜切伪影。
+  pts = insetAxisAlignedPolygon(pts, bevelSize * 0.45);
+  const shape2d = roundedAxisAlignedShape(pts, radius);
+  const bevelThickness = radius;
+  const depth = Math.max(height - bevelThickness * 2, height * 0.5);
+
+  const geo = new THREE.ExtrudeGeometry(shape2d, {
+    depth,
+    bevelEnabled: true,
+    bevelThickness,
+    bevelSize,
+    bevelSegments: 8,
+    curveSegments: 8
   });
-  trayQueue = [...items];
-  layoutTrayQueue({ animate: false });
-  refreshStatus();
+
+  // Shape XY + 挤出 Z → Y-up。
+  // XZ 必须保持「shape 包围盒中心」为原点（与 gridToWorld / 矩形件一致），
+  // 不可按实心 mesh AABB 再居中，否则 L/T 会相对逻辑格偏移且显大。
+  geo.rotateX(-Math.PI / 2);
+  geo.computeBoundingBox();
+  const bb = geo.boundingBox;
+  geo.translate(0, -(bb.min.y + bb.max.y) / 2, 0);
+  geo.computeVertexNormals();
+  return geo;
 }
 
 function createItemMesh(item) {
-  const group = new THREE.Group();
-  const width = item.shape[0].length * itemCellSize - 0.08;
-  const depth = item.shape.length * itemCellSize - 0.08;
+  const shape = item.shape;
+  const cols = shape[0].length;
+  const rows = shape.length;
   const height = getItemVisualHeight(item);
   const material = new THREE.MeshStandardMaterial({
     color: item.color,
     roughness: 0.54,
     metalness: 0.015
   });
-  const block = new THREE.Mesh(
-    new RoundedBoxGeometry(width, height, depth, 6, 0.08),
-    material
-  );
-  block.castShadow = true;
-  block.receiveShadow = true;
-  group.add(block);
+  const cellSize = itemCellSize;
+  const inset = 0.08;
+  // 所有物品统一走同一套 polyomino 圆角挤出管线。
+  // 避免方形件和异形件分别使用 RoundedBoxGeometry / ExtrudeGeometry 导致圆角观感不一致。
+  const geometry = createSolidPolyominoGeometry(shape, cellSize, height, inset);
 
-  return group;
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
 }
 
 function getBoardItemScale() {
   return grid.cell / itemCellSize;
 }
 
-function setItemScale(item, xzScale, yScale = xzScale) {
-  item.mesh.scale.set(xzScale, yScale, xzScale);
+/** 拖拽时使用的入箱尺寸（略放大） */
+function getDragItemScale() {
+  return getBoardItemScale() * DRAG_SCALE_BOOST;
 }
 
-function updateActiveItemDragScale(next) {
-  if (!activeItem) return;
-  if (next?.inside) {
-    setItemScale(activeItem, getBoardItemScale() * 1.06, 1.06);
-    return;
+function setItemScale(item, xzScale, yScale = xzScale) {
+  item.mesh.scale.set(xzScale, yScale, xzScale);
+  item.targetScale = xzScale;
+}
+
+/** 平滑过渡到目标缩放（拿起立刻向入箱尺寸过渡） */
+function setItemScaleTarget(item, scale) {
+  item.targetScale = scale;
+}
+
+function updateScaleAnimations() {
+  for (const item of items) {
+    if (item.targetScale === undefined || !item.mesh) continue;
+    // 提示动画自行驱动缩放
+    if (hintMove?.item === item) continue;
+    const current = item.mesh.scale.x;
+    const target = item.targetScale;
+    const delta = target - current;
+    if (Math.abs(delta) < 0.001) {
+      if (current !== target) item.mesh.scale.set(target, target, target);
+      continue;
+    }
+    const next = current + delta * scaleLerpAlpha;
+    item.mesh.scale.set(next, next, next);
   }
-  setItemScale(activeItem, trayScale * 1.06);
+}
+
+function updateActiveItemDragScale() {
+  if (!activeItem) return;
+  // 拿起后始终按入箱尺寸，不因是否悬在箱上而突变
+  setItemScaleTarget(activeItem, getDragItemScale());
 }
 
 function getShapeCells(shape) {
@@ -785,6 +1313,9 @@ function onPointerDown(event) {
   activeItem = picked;
   activeItem.wasPlaced = activeItem.placed;
   activeItem.dragStartRotation = activeItem.rotation;
+  activeItem.lastAutoRotationAt = 0;
+  activeItem.autoRotateIntentKey = null;
+  activeItem.autoRotateIntentSince = 0;
   activeItem.previousPlacement = activeItem.placed
     ? { gx: activeItem.gridX, gy: activeItem.gridY, level: activeItem.level, rotation: activeItem.rotation }
     : null;
@@ -792,7 +1323,8 @@ function onPointerDown(event) {
   if (activeItem.finalIntentPlacement) {
     applyIntentRotation(activeItem, activeItem.finalIntentPlacement.rotation);
   }
-  setItemScale(activeItem, activeItem.placed ? getBoardItemScale() * 1.06 : trayScale * 1.06, activeItem.placed ? 1.06 : trayScale * 1.06);
+  // 一点即按入箱尺寸过渡（从待放区拿起也会立刻放大，不必等到悬在箱上）
+  setItemScaleTarget(activeItem, getDragItemScale());
   activeItem.mesh.position.y = grid.pickupHeight;
   activeItem.placed = false;
   setItemShadow(activeItem, false);
@@ -814,7 +1346,7 @@ function onPointerMove(event) {
   activeItem.mesh.position.x = hitPoint.x + dragOffset.x;
   activeItem.mesh.position.z = hitPoint.z + dragOffset.z;
   candidate = getIntentCandidate(activeItem, activeItem.mesh.position);
-  updateActiveItemDragScale(candidate);
+  updateActiveItemDragScale();
   showGridGuide(candidate?.baseLevel ?? 0);
   updateGhost(candidate);
 }
@@ -840,7 +1372,7 @@ function onPointerUp(event) {
     restoreActiveItem();
   }
   setItemShadow(activeItem, true);
-  if (activeItem.placed) setItemScale(activeItem, getBoardItemScale(), 1);
+  if (activeItem.placed) setItemScale(activeItem, getBoardItemScale());
   activeItem.finalIntentPlacement = null;
   activeItem.dragStartRotation = null;
   activeItem = null;
@@ -876,6 +1408,12 @@ function getCandidate(item, worldPosition) {
 
 function getCandidateForRotation(item, worldPosition, rotation) {
   const shape = rotateShape(item.shape, rotation);
+  const snap = getSnapGridForShape(worldPosition, shape);
+  const placement = getPlacement(item, snap.gx, snap.gy, shape);
+  return { gx: snap.gx, gy: snap.gy, shape, inside: snap.inside, rotation, ...placement };
+}
+
+function getSnapGridForShape(worldPosition, shape) {
   const cols = shape[0].length;
   const rows = shape.length;
   const localX = worldPosition.x - grid.left;
@@ -884,30 +1422,123 @@ function getCandidateForRotation(item, worldPosition, rotation) {
   const gy = Math.round(localZ / grid.cell - rows / 2);
   const inside = worldPosition.x >= grid.left - 0.8 && worldPosition.x <= -grid.left + 0.8
     && worldPosition.z >= grid.top - 0.8 && worldPosition.z <= -grid.top + 0.8;
-  const placement = getPlacement(item, gx, gy, shape);
-  return { gx, gy, shape, inside, rotation, ...placement };
+  return { gx, gy, inside };
 }
 
 function getIntentCandidate(item, worldPosition) {
   const current = getCandidate(item, worldPosition);
-  if (current.valid || !current.inside) return current;
+  if (current.valid || !current.inside) {
+    clearAutoRotateIntent(item);
+    return current;
+  }
 
   const finalPlacement = item.finalIntentPlacement || getFinalItemIntentPlacement(item);
   if (finalPlacement) {
     applyIntentRotation(item, finalPlacement.rotation);
   }
 
-  const matches = [];
-  for (let rotation = 0; rotation < 4; rotation += 1) {
-    if (rotation === item.rotation) continue;
-    const next = getCandidateForRotation(item, worldPosition, rotation);
-    if (next.valid) matches.push(next);
+  if (hasNearbyValidPlacementForRotation(item, worldPosition, item.rotation)) {
+    clearAutoRotateIntent(item);
+    return current;
   }
 
-  if (matches.length !== 1) return current;
+  const now = performance.now();
+  if (now - (item.lastAutoRotationAt ?? 0) < autoRotateCooldownMs) {
+    return current;
+  }
+
+  const matches = getNearbyValidRotationCandidates(item, worldPosition, current);
+
+  if (matches.length !== 1) {
+    clearAutoRotateIntent(item);
+    return current;
+  }
+
+  const intentKey = `${matches[0].rotation}:${getPlacementFootprintKey(matches[0].gx, matches[0].gy, matches[0].shape, matches[0].baseLevel)}`;
+  if (item.autoRotateIntentKey !== intentKey) {
+    item.autoRotateIntentKey = intentKey;
+    item.autoRotateIntentSince = now;
+    return current;
+  }
+
+  if (now - (item.autoRotateIntentSince ?? 0) < autoRotateDwellMs) {
+    return current;
+  }
 
   applyIntentRotation(item, matches[0].rotation);
+  item.lastAutoRotationAt = now;
+  clearAutoRotateIntent(item);
   return matches[0];
+}
+
+function clearAutoRotateIntent(item) {
+  item.autoRotateIntentKey = null;
+  item.autoRotateIntentSince = 0;
+}
+
+function getNearbyValidRotationCandidates(item, worldPosition) {
+  const matches = [];
+  const seen = new Set();
+
+  for (let rotation = 0; rotation < 4; rotation += 1) {
+    if (rotation === item.rotation) continue;
+    const shape = rotateShape(item.shape, rotation);
+    const snap = getSnapGridForShape(worldPosition, shape);
+
+    for (let dy = -autoRotateSearchRadius; dy <= autoRotateSearchRadius; dy += 1) {
+      for (let dx = -autoRotateSearchRadius; dx <= autoRotateSearchRadius; dx += 1) {
+        const gx = snap.gx + dx;
+        const gy = snap.gy + dy;
+        const placement = getPlacement(item, gx, gy, shape);
+        if (!placement.valid) continue;
+
+        const key = `${rotation}:${getPlacementFootprintKey(gx, gy, shape, placement.baseLevel)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        const world = gridToWorld(gx, gy, shape);
+        const distanceSq = (world.x - worldPosition.x) ** 2 + (world.z - worldPosition.z) ** 2;
+        matches.push({
+          gx,
+          gy,
+          shape,
+          rotation,
+          inside: true,
+          distanceSq,
+          ...placement
+        });
+      }
+    }
+  }
+
+  if (matches.length <= 1) return matches;
+  matches.sort((a, b) => a.distanceSq - b.distanceSq);
+  const closest = matches[0];
+  const second = matches[1];
+  const maxSnapDistanceSq = (grid.cell * autoRotateMaxSnapDistanceCells) ** 2;
+  if (closest.distanceSq > maxSnapDistanceSq) return matches;
+  if (second && second.distanceSq - closest.distanceSq < maxSnapDistanceSq * 0.35) return matches;
+  return [closest];
+}
+
+function hasNearbyValidPlacementForRotation(item, worldPosition, rotation) {
+  const shape = rotateShape(item.shape, rotation);
+  const snap = getSnapGridForShape(worldPosition, shape);
+  const maxSnapDistanceSq = (grid.cell * autoRotateMaxSnapDistanceCells) ** 2;
+
+  for (let dy = -autoRotateSearchRadius; dy <= autoRotateSearchRadius; dy += 1) {
+    for (let dx = -autoRotateSearchRadius; dx <= autoRotateSearchRadius; dx += 1) {
+      const gx = snap.gx + dx;
+      const gy = snap.gy + dy;
+      const placement = getPlacement(item, gx, gy, shape);
+      if (!placement.valid) continue;
+      const world = gridToWorld(gx, gy, shape);
+      const distanceSq = (world.x - worldPosition.x) ** 2 + (world.z - worldPosition.z) ** 2;
+      if (distanceSq <= maxSnapDistanceSq) return true;
+    }
+  }
+
+  return false;
 }
 
 function getFinalItemIntentPlacement(item) {
@@ -1094,9 +1725,10 @@ function placeItem(item, next, { recordUndo = true } = {}) {
   item.level = next.baseLevel;
   item.placed = true;
   trayQueue = trayQueue.filter((entry) => entry !== item);
+  const boardScale = getBoardItemScale();
   item.mesh.position.copy(gridToWorld(next.gx, next.gy, next.shape));
-  item.mesh.position.y = getBoardItemY(item, 1, next.baseLevel);
-  setItemScale(item, getBoardItemScale(), 1);
+  item.mesh.position.y = getBoardItemY(item, boardScale, next.baseLevel);
+  setItemScale(item, boardScale);
   setItemShadow(item, true);
   item.lastValid = { gx: next.gx, gy: next.gy, level: next.baseLevel, rotation: item.rotation };
   layoutTrayQueue({ animate: true });
@@ -1112,9 +1744,10 @@ function restoreActiveItem() {
     activeItem.level = previous.level;
     activeItem.placed = true;
     setItemRotationImmediate(activeItem, activeItem.rotation);
+    const boardScale = getBoardItemScale();
     activeItem.mesh.position.copy(gridToWorld(activeItem.gridX, activeItem.gridY, shape));
-    activeItem.mesh.position.y = getBoardItemY(activeItem, 1, activeItem.level);
-    setItemScale(activeItem, getBoardItemScale(), 1);
+    activeItem.mesh.position.y = getBoardItemY(activeItem, boardScale, activeItem.level);
+    setItemScale(activeItem, boardScale);
     setItemShadow(activeItem, true);
     return;
   }
@@ -1123,7 +1756,8 @@ function restoreActiveItem() {
   activeItem.mesh.position.y = getTableItemY(activeItem, trayScale);
   activeItem.rotation = activeItem.dragStartRotation ?? activeItem.rotation;
   setItemRotationImmediate(activeItem, activeItem.rotation);
-  setItemScale(activeItem, trayScale);
+  // 放回待放区：平滑缩回预览尺寸
+  setItemScaleTarget(activeItem, trayScale);
   setItemShadow(activeItem, true);
   activeItem.placed = false;
 }
@@ -1147,8 +1781,7 @@ function gridToWorld(gx, gy, shape) {
 function updateGhost(next) {
   ghostGroup.clear();
   if (!next?.inside) return;
-  const cols = next.shape[0].length;
-  const rows = next.shape.length;
+  const shape = next.shape;
   const height = 0.045;
   const ghostColor = next.valid ? '#22c55e' : '#ef4444';
   const mat = new THREE.MeshBasicMaterial({
@@ -1157,17 +1790,18 @@ function updateGhost(next) {
     opacity: next.hint ? 0.36 : 0.58,
     depthWrite: false
   });
-  const ghost = new THREE.Mesh(
-    new THREE.BoxGeometry(cols * grid.cell - 0.08, height, rows * grid.cell - 0.08),
-    mat
-  );
-  ghost.position.copy(gridToWorld(next.gx, next.gy, next.shape));
-  ghost.position.y = getBoardSurfaceY() + next.baseLevel * grid.levelHeight + 0.035;
-  ghostGroup.add(ghost);
+  const origin = gridToWorld(next.gx, next.gy, shape);
+  const y = getBoardSurfaceY() + next.baseLevel * grid.levelHeight + 0.035;
+  const cell = grid.cell;
+  const inset = 0.08;
 
-  const edgeGeo = new THREE.EdgesGeometry(ghost.geometry);
+  const geometry = createSolidPolyominoGeometry(shape, cell, height, inset);
+
+  const ghost = new THREE.Mesh(geometry, mat);
+  ghost.position.set(origin.x, y, origin.z);
+  ghostGroup.add(ghost);
   const edge = new THREE.LineSegments(
-    edgeGeo,
+    new THREE.EdgesGeometry(geometry),
     new THREE.LineBasicMaterial({
       color: ghostColor,
       transparent: true,
@@ -1240,7 +1874,8 @@ function startHintAutoPlace(hint) {
   updateGhost(hint);
 
   const endPosition = gridToWorld(hint.gx, hint.gy, hint.shape);
-  endPosition.y = getBoardItemY(item, 1, hint.baseLevel);
+  const boardScale = getBoardItemScale();
+  endPosition.y = getBoardItemY(item, boardScale, hint.baseLevel);
 
   hintMove = {
     item,
@@ -1250,7 +1885,7 @@ function startHintAutoPlace(hint) {
     startPosition: item.mesh.position.clone(),
     endPosition,
     startScale: item.mesh.scale.x,
-    endScale: getBoardItemScale()
+    endScale: boardScale
   };
   showToast('正在演示摆放');
 }
@@ -1277,7 +1912,7 @@ function updateHintMove() {
 
   const liftScale = Math.sin(Math.PI * phase);
   const xzScale = THREE.MathUtils.lerp(startScale, endScale, phase) + liftScale * 0.06;
-  const yScale = THREE.MathUtils.lerp(startScale, 1, phase) + liftScale * 0.06;
+  const yScale = THREE.MathUtils.lerp(startScale, endScale, phase) + liftScale * 0.06;
   setItemScale(item, xzScale, yScale);
 
   if (t < 1) return;
@@ -1316,8 +1951,9 @@ function rotateActiveOrLast() {
     const placement = getPlacement(item, item.gridX, item.gridY, shape);
     item.mesh.position.copy(gridToWorld(item.gridX, item.gridY, shape));
     item.level = placement.baseLevel;
-    item.mesh.position.y = getBoardItemY(item, 1, item.level);
-    setItemScale(item, getBoardItemScale(), 1);
+    const boardScale = getBoardItemScale();
+    item.mesh.position.y = getBoardItemY(item, boardScale, item.level);
+    setItemScale(item, boardScale);
     refreshStatus();
   } else {
     item.rotation = previous;
@@ -1326,21 +1962,9 @@ function rotateActiveOrLast() {
 }
 
 function resetLevel() {
-  if (activeItem) {
-    try {
-      canvas.releasePointerCapture?.();
-    } catch {
-      /* ignore */
-    }
-    activeItem = null;
-    candidate = null;
-  }
+  stopGameplayInteraction();
   completionShown = false;
   undoStack = [];
-  hintMove = null;
-  clearHint();
-  toastEl.classList.remove('show');
-  hideSettlePanel();
   trayQueue = [...items];
   for (const item of items) {
     item.rotation = 0;
@@ -1418,14 +2042,15 @@ function undoLastMove() {
     item.finalIntentPlacement = null;
     item.dragStartRotation = null;
     setItemRotationImmediate(item, item.rotation);
-    setItemScale(item, item.placed ? getBoardItemScale() : trayScale, item.placed ? 1 : trayScale);
+    setItemScale(item, item.placed ? getBoardItemScale() : trayScale);
     setItemShadow(item, true);
 
     if (item.placed) {
       const shape = rotateShape(item.shape, item.rotation);
+      const boardScale = getBoardItemScale();
       item.mesh.visible = true;
       item.mesh.position.copy(gridToWorld(item.gridX, item.gridY, shape));
-      item.mesh.position.y = getBoardItemY(item, 1, item.level);
+      item.mesh.position.y = getBoardItemY(item, boardScale, item.level);
     } else {
       item.trayVisible = false;
       item.targetPosition = null;
@@ -1655,7 +2280,7 @@ function applyTableRig() {
 }
 
 function getBoardSurfaceY() {
-  return 0.015 + 0.04;
+  return BOARD_SURFACE_Y;
 }
 
 function getBoardItemY(item, scale = 1, level = 0) {
@@ -1713,12 +2338,13 @@ function initCameraPanel() {
 function resetCameraRig() {
   Object.assign(cameraRig, defaultCameraRig);
   cameraModeSelect.value = cameraRig.mode;
+  // 多关卡下默认值按当前箱体重新 fit，而不是死锁 5×5 构图
+  fitCameraToBox();
   for (const input of cameraControlsEl.querySelectorAll('[data-camera-key]')) {
     const key = input.dataset.cameraKey;
     input.value = cameraRig[key];
     syncCameraPanelValue(key);
   }
-  applyCameraRig();
 }
 
 function syncCameraPanelValue(key) {
@@ -1781,5 +2407,6 @@ function animate() {
   updateHintMove();
   updateTrayAnimations();
   updateRotationAnimations();
+  updateScaleAnimations();
   renderer.render(scene, camera);
 }
