@@ -959,52 +959,52 @@ new THREE.EdgesGeometry(ghost.geometry)
 
 边框透明度 `0.95`。
 
-## 19. 意图自动转角（v1）
+## 19. 意图自动转角
 
-### 参数
+权威变更表：`docs/research/INTENT-IMPLEMENTATION-CHANGELOG.md`。
 
-```js
-autoRotateDwellMs = 300
-autoRotateCooldownMs = 450
-autoRotateMaxSnapDistanceCells = 0.6
-manualLockMs = 800
-autoRotateDistWeight = 3
-autoRotateScoreMargin = 0.55
-autoRotateFinalBonus = 0.6
-```
+### 分档（`getAutoRotateAssistProfile`）
+
+- **small** / **medium** / **large**：按 `cols*rows`、`levels`、体积。
+- large：更严 maxSnap、margin、dwell、cooldown；`requireAiming`；禁唯一免 margin。
+- **大件** `getItemFootprintBulk`（格数≥6 或跨度≥4，如 4×2）：须 hovering 或 edgeScrub；dwell×1.45；cooldown×1.35；更高 margin。
+
+### 瞄准态（`getDragTrend` / `detectEdgeScrub`）
+
+- hovering：几乎停住  
+- aiming：慢速（&lt; ~2.4 格/秒）  
+- edgeScrub：同一侧边沿边滑动/来回  
+- 快甩：`allowAssist = false`
 
 ### 流程（`getIntentCandidate`）
 
-1. 不在箱内 → 不评估。
-2. `manualLockUntil` 未过 → 只返回当前角 candidate。
-3. 当前角 valid 或邻域近距合法 → **合法不抢**，不换角。
-4. cooldown 内 → 不换角。
-5. `rankNearbyRotationCandidates`：其它 0–3 朝向 × 有序 kick；跳过与当前矩阵等价的朝向（对称块静默）。
-6. score = `-3 * distCells` +（最后一块唯一解同朝向则 +0.6）。
-7. best 须在 maxSnap 内，且 `best.score - second.score >= 0.55`。
-8. 同一 intentKey 悬停 ≥ dwell → `applyIntentRotation`，返回新 candidate。
+1. 近箱（inside 或 pad）否则不评估。  
+2. manualLock → 不转。  
+3. `current.valid` → 合法不抢。  
+4. requireAiming 且非瞄准 → 不转。  
+5. 大件且非停稳/刷边 → 不转。  
+6. `rankNearbyRotationCandidates`：仅 valid；互异脚印；**脚印区域距离** `footprintDistanceSq`（非中心）。  
+7. maxSnap / margin / dwell 按 profile + 大件修正。  
+8. `isPlacementStillValid` 后再 `applyIntentRotation`（最短角）。
 
-### 拿起
+### 旋转动画
 
-`beginDragItem` 只缓存 `finalIntentPlacement`，**不** `applyIntentRotation`。
+- `canonicalRotationY` + `shortestAngleDelta`  
+- `setItemRotationTarget` / `updateRotationAnimations` 最短路径插值  
 
-### 手动
+### 拿起 / 手动 / 最后一块
 
-`rotateItemByTap` 设置 `manualLockUntil = now + 800`。
-
-### 最后一块
-
-`getFinalItemIntentPlacement` 仍算全局唯一 footprint；仅加权，入箱高置信后才可能转。
+- `beginDragItem`：缓存 final，不强转；清 trail / lock  
+- `rotateItemByTap`：`manualLockUntil = now + 800`  
+- `getFinalItemIntentPlacement`：仅加权  
 
 ### 相关函数
 
-- `getIntentCandidate()`
-- `rankNearbyRotationCandidates()`
-- `hasNearbyValidPlacementForRotation()`
-- `getFinalItemIntentPlacement()`
-- `getPlacementFootprintKey()`
-- `applyIntentRotation()`
-- `setItemRotationTarget()` / `setItemRotationImmediate()`
+- `getAutoRotateAssistProfile` · `getItemFootprintBulk`  
+- `sampleDragTrail` · `getDragTrend` · `detectEdgeScrub` · `getEdgeAlignmentHint`  
+- `getDistinctRotationOptions` · `footprintDistanceSq` · `rankNearbyRotationCandidates`  
+- `getIntentCandidate` · `isPlacementStillValid`  
+- `applyIntentRotation` · `shortestAngleDelta` · `setItemRotationTarget`
 
 ## 20. 提示自动摆放
 
