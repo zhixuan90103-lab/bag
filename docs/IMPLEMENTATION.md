@@ -685,7 +685,7 @@ canvas.addEventListener('pointerdown', onPointerDown);
 5. 记录物品是否已放置。
 6. 记录拖拽开始旋转。
 7. 如果物品已放置，记录 `previousPlacement`。
-8. 计算最后一块意图旋转候选。
+8. 缓存最后一块唯一解（仅加权，拿起不转角）。
 9. 物品放大到拖拽态。
 10. Y 坐标设置为 `grid.pickupHeight`。
 11. 临时关闭投影。
@@ -959,46 +959,52 @@ new THREE.EdgesGeometry(ghost.geometry)
 
 边框透明度 `0.95`。
 
-## 19. 最后一块意图旋转
+## 19. 意图自动转角（v1）
 
-当前仍保留最后一块意图识别。
-
-触发时机：
+### 参数
 
 ```js
-activeItem.finalIntentPlacement = getFinalItemIntentPlacement(activeItem);
+autoRotateDwellMs = 300
+autoRotateCooldownMs = 450
+autoRotateMaxSnapDistanceCells = 0.6
+manualLockMs = 800
+autoRotateDistWeight = 3
+autoRotateScoreMargin = 0.55
+autoRotateFinalBonus = 0.6
 ```
 
-限制条件：
+### 流程（`getIntentCandidate`）
 
-```js
-const remaining = items.filter((entry) => !entry.placed && entry !== item).length;
-if (remaining !== 0) return null;
-```
+1. 不在箱内 → 不评估。
+2. `manualLockUntil` 未过 → 只返回当前角 candidate。
+3. 当前角 valid 或邻域近距合法 → **合法不抢**，不换角。
+4. cooldown 内 → 不换角。
+5. `rankNearbyRotationCandidates`：其它 0–3 朝向 × 有序 kick；跳过与当前矩阵等价的朝向（对称块静默）。
+6. score = `-3 * distCells` +（最后一块唯一解同朝向则 +0.6）。
+7. best 须在 maxSnap 内，且 `best.score - second.score >= 0.55`。
+8. 同一 intentKey 悬停 ≥ dwell → `applyIntentRotation`，返回新 candidate。
 
-即只有最后一个未放物品才触发。
+### 拿起
 
-算法：
+`beginDragItem` 只缓存 `finalIntentPlacement`，**不** `applyIntentRotation`。
 
-1. 遍历 4 个旋转角度。
-2. 遍历所有可能格子位置。
-3. 调用 `getPlacement()` 找合法位置。
-4. 用 footprint key 去重。
-5. 如果全局只有一个合法 footprint，返回它。
+### 手动
 
-行为：
+`rotateItemByTap` 设置 `manualLockUntil = now + 800`。
 
-- 只自动改变角度。
-- 不自动移动位置。
-- 如果放错或回到待放区，角度立即恢复。
+### 最后一块
 
-相关函数：
+`getFinalItemIntentPlacement` 仍算全局唯一 footprint；仅加权，入箱高置信后才可能转。
 
+### 相关函数
+
+- `getIntentCandidate()`
+- `rankNearbyRotationCandidates()`
+- `hasNearbyValidPlacementForRotation()`
 - `getFinalItemIntentPlacement()`
 - `getPlacementFootprintKey()`
 - `applyIntentRotation()`
-- `setItemRotationTarget()`
-- `setItemRotationImmediate()`
+- `setItemRotationTarget()` / `setItemRotationImmediate()`
 
 ## 20. 提示自动摆放
 
@@ -1455,9 +1461,9 @@ dragPlane.constant = -grid.pickupHeight;
 
 提示按钮不是只提示，而是会从当前可见 3 个物品中选择一个可放位置，并自动演示摆放后真正放下。
 
-### 8. 最后一块意图旋转仍保留
+### 8. 意图自动转角 v1
 
-这与提示系统共存。手动拿起最后一块时，仍可能自动调整角度。提示自动摆放也会自动选定推荐角度。
+拿起不转；箱内非法时 kick+打分+dwell 才转。最后一块唯一解仅加权。与提示代放分责。详见 §19。
 
 ### 9. 性能注意
 
