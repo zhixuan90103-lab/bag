@@ -26,9 +26,12 @@ import {
 export const levels = [
   {
     id: 'small-first-order',
-    name: '先底后盖',
+    name: '完整支撑',
     box: { cols: 2, rows: 2, levels: 2, cellSize: 1.05 },
-    // 容积 8：两条底板铺满第一层后，整块盖板才能放到第二层
+    puzzleIntent: '先让玩家理解：上层物品不是看见空位就能放，必须先把 footprint 下方完整铺满。',
+    keyItem: 'l1-top',
+    keyPlacement: { gx: 0, gy: 0, level: 1 },
+    // 破题点：两条底板必须先共同组成完整 2×2 支撑面。
     items: [
       { id: 'l1-base-a', label: '蓝底条', shape: rectShape(2, 1), height: 1, role: 'foundation', intendedLayer: 0, color: '#2367d9' },
       { id: 'l1-base-b', label: '橙底条', shape: rectShape(2, 1), height: 1, role: 'foundation', intendedLayer: 0, color: '#f28b2e' },
@@ -37,9 +40,12 @@ export const levels = [
   },
   {
     id: 'corner-pair',
-    name: '拐角铺底',
+    name: '异形拼底',
     box: { cols: 2, rows: 3, levels: 2, cellSize: 0.98 },
-    // 容积 12：两个三格拐角先拼满底层，再放 2×3 上层板
+    puzzleIntent: '两个三格异形必须互补成完整底面；错在这里，上层整板永远没有完整支撑。',
+    keyItem: 'l2-top',
+    keyPlacement: { gx: 0, gy: 0, level: 1 },
+    // 破题点：底层不是随便填满，而是要拼出一整块 2×3 平台。
     items: [
       { id: 'l2-corner', label: '青底角', shape: shapeCorner(), height: 1, role: 'foundation', intendedLayer: 0, color: '#2ec4b6' },
       { id: 'l2-l3', label: '紫底角', shape: shapeL3(), height: 1, role: 'foundation', intendedLayer: 0, color: '#9b6ce3' },
@@ -48,12 +54,15 @@ export const levels = [
   },
   {
     id: 'corner-quartet',
-    name: '四角托盘',
+    name: '高块占边',
     box: { cols: 3, rows: 4, levels: 2, cellSize: 0.86 },
-    // 容积 24：一个落底顶满高块先占位，其余底层补齐后再放上层盖板
+    puzzleIntent: '顶满高度的长高块必须先作为边界锚点；它会决定剩余底层被切成什么形状。',
+    keyItem: 'l3-tall',
+    keyPlacement: { gx: 0, gy: 0, level: 0 },
+    // 破题点：1×2×2 高块落底后直接占满上下两层，其余物品围绕它补出底面和上层缺口。
     items: [
       { id: 'l3-tall', label: '蓝高箱', shape: rectShape(1, 2), height: 2, role: 'foundation', intendedLayer: 0, color: '#2367d9' },
-      { id: 'l3-c1', label: '蓝底角', shape: shapeCorner(), height: 1, role: 'foundation', intendedLayer: 0, color: '#2367d9' },
+      { id: 'l3-c1', label: '紫底角', shape: shapeCorner(), height: 1, role: 'foundation', intendedLayer: 0, color: '#9b6ce3' },
       { id: 'l3-c2', label: '红底角', shape: shapeCorner(), height: 1, role: 'foundation', intendedLayer: 0, color: '#e63237' },
       { id: 'l3-c3', label: '黄底角', shape: shapeCorner(), height: 1, role: 'foundation', intendedLayer: 0, color: '#f2d33c' },
       { id: 'l3-bar', label: '绿底条', shape: rectShape(1, 1), height: 1, role: 'foundation', intendedLayer: 0, color: '#44c06a' },
@@ -64,9 +73,12 @@ export const levels = [
   },
   {
     id: 't-field',
-    name: 'T 字底架',
+    name: '角落高箱',
     box: { cols: 4, rows: 4, levels: 2, cellSize: 0.78 },
-    // 容积 32：一个 2×2×2 高箱顶满高度，三块底板补齐底层后再上架
+    puzzleIntent: '2×2×2 高箱是整关锚点；玩家要先把它当作角落大件处理，再用三块底板补齐剩余象限。',
+    keyItem: 'l4-tall',
+    keyPlacement: { gx: 0, gy: 0, level: 0 },
+    // 破题点：高箱占掉一个 2×2 象限，剩下三个 2×2 底板和三个 2×2 盖板自然展开。
     items: [
       { id: 'l4-tall', label: '蓝高箱', shape: rectShape(2, 2), height: 2, role: 'foundation', intendedLayer: 0, color: '#2367d9' },
       { id: 'l4-base-a', label: '红底板', shape: rectShape(2, 2), height: 1, role: 'foundation', intendedLayer: 0, color: '#e63237' },
@@ -79,9 +91,12 @@ export const levels = [
   },
   {
     id: 'l-and-j',
-    name: 'L/J 承重',
+    name: '封口预留',
     box: { cols: 4, rows: 4, levels: 2, cellSize: 0.78 },
-    // 容积 32：高箱先落底顶满高度，三块底板补出可承重的底层区域
+    puzzleIntent: '上层有两条 4×1 长盖板，底层必须提前形成连续支撑带；不能只看当前小块哪里能塞。',
+    keyItem: 'l5-top-a',
+    keyPlacement: { gx: 0, gy: 0, level: 1 },
+    // 破题点：高箱占满一个角后，剩余底层要保持连续行/列，给长盖板留完整支撑。
     items: [
       { id: 'l5-tall', label: '蓝高箱', shape: rectShape(2, 2), height: 2, role: 'foundation', intendedLayer: 0, color: '#2367d9' },
       { id: 'l5-base-c', label: '青底板', shape: rectShape(2, 2), height: 1, role: 'foundation', intendedLayer: 0, color: '#2ec4b6' },
@@ -94,9 +109,12 @@ export const levels = [
   },
   {
     id: 'u-and-corners',
-    name: 'U 型底座',
+    name: '双高边界',
     box: { cols: 4, rows: 4, levels: 2, cellSize: 0.78 },
-    // 容积 32：两个顶满高块形成竖向边界，U 型件和小件补底后再上层收口
+    puzzleIntent: '两个 1×2×2 高块会形成竖向边界，U 型件不能随便放，必须和高块共同决定底层轮廓。',
+    keyItem: 'l6-u',
+    keyPlacement: { gx: 0, gy: 0, level: 0 },
+    // 破题点：高块先切出边界，U 型件再负责封住底层关键缺口，上层 T/条形件收口。
     items: [
       { id: 'l6-tall-a', label: '蓝高箱', shape: rectShape(1, 2), height: 2, role: 'foundation', intendedLayer: 0, color: '#2367d9' },
       { id: 'l6-tall-b', label: '红高箱', shape: rectShape(1, 2), height: 2, role: 'foundation', intendedLayer: 0, color: '#e63237' },
@@ -112,9 +130,12 @@ export const levels = [
   },
   {
     id: 'voxel-stack-test',
-    name: '先铺底层',
+    name: '平台分区',
     box: { cols: 4, rows: 4, levels: 2, cellSize: 0.78 },
-    // 容积 32：先用 1 高度物品铺满第一层，再放第二层盖板
+    puzzleIntent: '底层四块 2×2 不是难点，难点是玩家要意识到它们是在搭两个 4×2 上层盖板的平台。',
+    keyItem: 'l7-top-a',
+    keyPlacement: { gx: 0, gy: 0, level: 1 },
+    // 破题点：先按平台思路铺底，再用两个 4×2 大件完成上层封口。
     items: [
       { id: 'l7-base-a', label: '蓝底板', shape: rectShape(2, 2), height: 1, role: 'foundation', intendedLayer: 0, color: '#2367d9' },
       { id: 'l7-base-b', label: '红底板', shape: rectShape(2, 2), height: 1, role: 'foundation', intendedLayer: 0, color: '#e63237' },
@@ -126,9 +147,12 @@ export const levels = [
   },
   {
     id: 't-stack',
-    name: '高箱与薄件',
+    name: '三层长槽',
     box: { cols: 4, rows: 4, levels: 3, cellSize: 0.78 },
-    // 容积 48：2×2×3 高箱先落底，其余 1 高度物品分层补满
+    puzzleIntent: '2×2×3 高箱顶满高度后，剩余空间要按层保留 4×1 长槽；长条位置是这关的关键。',
+    keyItem: 'l8-tower',
+    keyPlacement: { gx: 0, gy: 0, level: 0 },
+    // 破题点：高箱先定锚，底层补齐后，中层/顶层的 4×1 长条需要连续支撑。
     items: [
       { id: 'l8-tower', label: '蓝高箱', shape: rectShape(2, 2), height: 3, role: 'foundation', intendedLayer: 0, color: '#2367d9' },
       { id: 'l8-base-a', label: '红底板', shape: rectShape(2, 2), height: 1, role: 'foundation', intendedLayer: 0, color: '#e63237' },
@@ -144,9 +168,12 @@ export const levels = [
   },
   {
     id: 'stack-tower',
-    name: '三层货架',
+    name: '三柱货架',
     box: { cols: 6, rows: 6, levels: 3, cellSize: 0.78 },
-    // 容积 108：三个 2×2×3 高箱作为竖向锚点，其余 1 高度物品先铺底再上架
+    puzzleIntent: '三个 2×2×3 高箱是货架立柱；它们的位置决定剩余三层平台是否还能被 4×2 与 2×2 组合填满。',
+    keyItem: 'l9-tower-a',
+    keyPlacement: { gx: 0, gy: 0, level: 0 },
+    // 破题点：先用三个高箱建立竖向骨架，再按底层/中层/顶层逐层铺平台。
     items: [
       { id: 'l9-tower-a', label: '蓝高箱', shape: rectShape(2, 2), height: 3, role: 'foundation', intendedLayer: 0, color: '#2367d9' },
       { id: 'l9-tower-b', label: '红高箱', shape: rectShape(2, 2), height: 3, role: 'foundation', intendedLayer: 0, color: '#e63237' },

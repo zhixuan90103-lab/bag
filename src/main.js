@@ -278,6 +278,11 @@ let trayQueue = [];
 let activeItem = null;
 let dragOffset = new THREE.Vector3();
 let candidate = null;
+let pendingPointerItem = null;
+let pendingPointerId = null;
+let pendingPointerStart = { x: 0, y: 0 };
+let pendingPointerEvent = null;
+const DRAG_START_THRESHOLD_PX = 10;
 let completionShown = false;
 let tableMesh = null;
 let undoStack = [];
@@ -478,6 +483,8 @@ function releasePointerCaptureSafe() {
 }
 
 function stopGameplayInteraction() {
+  pendingPointerItem = null;
+  pendingPointerId = null;
   if (activeItem) {
     releasePointerCaptureSafe();
     activeItem = null;
@@ -563,9 +570,11 @@ function fitCameraToBox() {
 function rebuildItems() {
   clearGroup(itemGroup);
   items = level.items.map((data) => {
+    const trayRotation = getCompactTrayRotation(data);
     const item = {
       ...data,
-      rotation: 0,
+      rotation: trayRotation,
+      trayRotation,
       placed: false,
       gridX: null,
       gridY: null,
@@ -577,6 +586,7 @@ function rebuildItems() {
       mesh: createItemMesh(data)
     };
     item.mesh.userData.item = item;
+    setItemRotationImmediate(item, item.rotation);
     setItemScale(item, trayScale);
     itemGroup.add(item.mesh);
     return item;
@@ -861,6 +871,8 @@ function resetBoxRigPose() {
 }
 
 function startOpeningSequence() {
+  pendingPointerItem = null;
+  pendingPointerId = null;
   if (activeItem) {
     restoreActiveItem();
     activeItem = null;
@@ -881,6 +893,8 @@ function startOpeningSequence() {
 
 function startClosingSequence() {
   if (gamePhase !== 'play' || completionShown) return;
+  pendingPointerItem = null;
+  pendingPointerId = null;
   if (activeItem) {
     restoreActiveItem();
     activeItem = null;
@@ -1299,6 +1313,27 @@ function rotateShape(shape, turns) {
   return result;
 }
 
+function getCompactTrayRotation(item) {
+  const initialShape = rotateShape(item.shape, item.rotation ?? 0);
+  if (initialShape[0].length <= 2) return item.rotation ?? 0;
+
+  let bestRotation = 0;
+  let bestScore = Infinity;
+  for (let rotation = 0; rotation < 4; rotation += 1) {
+    const shape = rotateShape(item.shape, rotation);
+    const width = shape[0].length;
+    const depth = shape.length;
+    // 只处理横向超过 2 格的情况；能压到 2 格内就优先，避免无谓改变关卡设计朝向。
+    const overflowPenalty = width > 2 ? 100 : 0;
+    const score = overflowPenalty + width * 10 + depth;
+    if (score < bestScore) {
+      bestScore = score;
+      bestRotation = rotation;
+    }
+  }
+  return bestRotation;
+}
+
 function onPointerDown(event) {
   if (boxAnim && (gamePhase === 'opening' || gamePhase === 'closing')) {
     event.preventDefault();
@@ -1306,11 +1341,20 @@ function onPointerDown(event) {
     return;
   }
   if (isGameplayLocked()) return;
+  if (activeItem || pendingPointerItem) return;
   const picked = pickItem(event);
   if (!picked) return;
   event.preventDefault();
+  pendingPointerItem = picked;
+  pendingPointerId = event.pointerId;
+  pendingPointerStart = { x: event.clientX, y: event.clientY };
+  pendingPointerEvent = event;
+  canvas.setPointerCapture(event.pointerId);
+}
+
+function beginDragItem(item, event) {
   clearHint();
-  activeItem = picked;
+  activeItem = item;
   activeItem.wasPlaced = activeItem.placed;
   activeItem.dragStartRotation = activeItem.rotation;
   activeItem.lastAutoRotationAt = 0;
@@ -1323,12 +1367,11 @@ function onPointerDown(event) {
   if (activeItem.finalIntentPlacement) {
     applyIntentRotation(activeItem, activeItem.finalIntentPlacement.rotation);
   }
-  // 一点即按入箱尺寸过渡（从待放区拿起也会立刻放大，不必等到悬在箱上）
+  // 超过拖拽阈值后才按入箱尺寸过渡，避免单点点击也把物品拿起。
   setItemScaleTarget(activeItem, getDragItemScale());
   activeItem.mesh.position.y = grid.pickupHeight;
   activeItem.placed = false;
   setItemShadow(activeItem, false);
-  canvas.setPointerCapture(event.pointerId);
   updatePointer(event);
   dragPlane.constant = -grid.pickupHeight;
   raycaster.ray.intersectPlane(dragPlane, hitPoint);
@@ -1339,6 +1382,18 @@ function onPointerDown(event) {
 }
 
 function onPointerMove(event) {
+  if (pendingPointerItem && event.pointerId === pendingPointerId && !activeItem) {
+    event.preventDefault();
+    const dx = event.clientX - pendingPointerStart.x;
+    const dy = event.clientY - pendingPointerStart.y;
+    if (Math.hypot(dx, dy) >= DRAG_START_THRESHOLD_PX) {
+      beginDragItem(pendingPointerItem, event);
+      pendingPointerItem = null;
+      pendingPointerEvent = null;
+    } else {
+      return;
+    }
+  }
   if (!activeItem || isGameplayLocked()) return;
   event.preventDefault();
   updatePointer(event);
@@ -1352,19 +1407,32 @@ function onPointerMove(event) {
 }
 
 function onPointerUp(event) {
+  if (pendingPointerItem && event.pointerId === pendingPointerId && !activeItem) {
+    event.preventDefault();
+    const item = pendingPointerItem;
+    pendingPointerItem = null;
+    pendingPointerId = null;
+    pendingPointerEvent = null;
+    canvas.releasePointerCapture(event.pointerId);
+    if (event.type !== 'pointercancel') rotateItemByTap(item);
+    return;
+  }
   if (!activeItem) return;
   event.preventDefault();
   if (gamePhase !== 'play') {
     restoreActiveItem();
     setItemShadow(activeItem, true);
     activeItem = null;
+    pendingPointerItem = null;
+    pendingPointerId = null;
+    pendingPointerEvent = null;
     candidate = null;
     hideGridGuide();
     updateGhost(null);
     return;
   }
   canvas.releasePointerCapture(event.pointerId);
-  if (candidate?.valid) {
+  if (event.type !== 'pointercancel' && candidate?.valid) {
     placeItem(activeItem, candidate);
   } else if (candidate?.inside) {
     restoreActiveItem();
@@ -1376,6 +1444,9 @@ function onPointerUp(event) {
   activeItem.finalIntentPlacement = null;
   activeItem.dragStartRotation = null;
   activeItem = null;
+  pendingPointerItem = null;
+  pendingPointerId = null;
+  pendingPointerEvent = null;
   candidate = null;
   hideGridGuide();
   updateGhost(null);
@@ -1754,7 +1825,7 @@ function restoreActiveItem() {
 
   activeItem.mesh.position.copy(activeItem.homePosition);
   activeItem.mesh.position.y = getTableItemY(activeItem, trayScale);
-  activeItem.rotation = activeItem.dragStartRotation ?? activeItem.rotation;
+  activeItem.rotation = activeItem.trayRotation ?? activeItem.dragStartRotation ?? activeItem.rotation;
   setItemRotationImmediate(activeItem, activeItem.rotation);
   // 放回待放区：平滑缩回预览尺寸
   setItemScaleTarget(activeItem, trayScale);
@@ -1934,15 +2005,27 @@ function rotateActiveOrLast() {
   if (isGameplayLocked() && !activeItem) return;
   if (gamePhase !== 'play') return;
   const item = activeItem || items.find((entry) => entry.placed && entry.lastValid);
-  if (!item) return;
+  if (item) rotateItemByTap(item);
+}
+
+function rotateItemByTap(item) {
+  if (!item || gamePhase !== 'play' || isGameplayLocked()) return;
+  clearHint();
   const previous = item.rotation;
   item.rotation = (item.rotation + 1) % 4;
   setItemRotationTarget(item, item.rotation);
 
-  if (activeItem) {
+  if (item === activeItem) {
     candidate = getCandidate(item, item.mesh.position);
     showGridGuide(candidate?.baseLevel ?? 0);
     updateGhost(candidate);
+    return;
+  }
+
+  if (!item.placed) {
+    item.trayRotation = item.rotation;
+    item.finalIntentPlacement = null;
+    layoutTrayQueue({ animate: true });
     return;
   }
 
@@ -1967,7 +2050,7 @@ function resetLevel() {
   undoStack = [];
   trayQueue = [...items];
   for (const item of items) {
-    item.rotation = 0;
+    item.rotation = item.trayRotation ?? getCompactTrayRotation(item);
     item.placed = false;
     item.gridX = null;
     item.gridY = null;
@@ -1976,7 +2059,7 @@ function resetLevel() {
     item.trayVisible = false;
     item.targetPosition = null;
     item.finalIntentPlacement = null;
-    setItemRotationImmediate(item, 0);
+    setItemRotationImmediate(item, item.rotation);
     item.mesh.visible = true;
     setItemScale(item, trayScale);
     setItemShadow(item, true);
@@ -2033,8 +2116,8 @@ function undoLastMove() {
   for (const state of snapshot.items) {
     const item = itemById.get(state.id);
     if (!item) continue;
-    item.rotation = state.rotation;
     item.placed = state.placed;
+    item.rotation = state.placed ? state.rotation : item.trayRotation ?? getCompactTrayRotation(item);
     item.gridX = state.gridX;
     item.gridY = state.gridY;
     item.level = state.level;
