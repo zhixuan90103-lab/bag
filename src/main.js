@@ -21,6 +21,12 @@ const rotationLerpAlpha = 0.12;
 const DRAG_VISUAL_OFFSET_SCREEN_Y = 112;
 const DRAG_MOVE_GAIN_X = 1.3;
 const DRAG_MOVE_GAIN_Z = 1.45;
+const PICKUP_INTENT_RADIUS_PX = 56;
+const PICKUP_SMALL_ITEM_RADIUS_PX = 72;
+const PICKUP_DISTANCE_WEIGHT = 1;
+const PICKUP_TRAY_VISIBLE_BONUS = 0.35;
+const PICKUP_INSIDE_RECT_BONUS = 0.25;
+const PICKUP_SWITCH_MARGIN = 0.2;
 /**
  * 意图自动转角 · 形状×可放格子×手势 → Hot/Warm/Cold（见 getIntentCandidate）：
  *   L0 采样 → L1 时机 → L2 格子发现 → 通道分类 → L3 决策 → L4 确认
@@ -414,6 +420,8 @@ const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const hitPoint = new THREE.Vector3();
+const pickupProjectionBox = new THREE.Box3();
+const pickupProjectionPoint = new THREE.Vector3();
 
 let items = [];
 let trayQueue = [];
@@ -1584,7 +1592,7 @@ function onPointerUp(event) {
     pendingPointerId = null;
     pendingPointerEvent = null;
     canvas.releasePointerCapture(event.pointerId);
-    if (event.type !== 'pointercancel') rotateItemByTap(item);
+    if (event.type !== 'pointercancel' && !item.placed) rotateItemByTap(item);
     return;
   }
   if (!activeItem) return;
@@ -1627,13 +1635,103 @@ function pickItem(event) {
   updatePointer(event);
   const intersects = raycaster.intersectObjects(itemGroup.children, true);
   const hit = intersects.find((entry) => findItemRoot(entry.object));
-  return hit ? findItemRoot(hit.object).userData.item : null;
+  if (hit) return findItemRoot(hit.object).userData.item;
+  return pickItemByIntent(event);
 }
 
 function findItemRoot(object) {
   let current = object;
   while (current && current.parent !== itemGroup) current = current.parent;
   return current?.parent === itemGroup ? current : null;
+}
+
+function pickItemByIntent(event) {
+  const viewportRect = canvas.getBoundingClientRect();
+  const pointerX = event.clientX;
+  const pointerY = event.clientY;
+  const candidates = [];
+
+  for (const item of items) {
+    if (!isPickupIntentCandidate(item)) continue;
+    const projectedRect = getProjectedItemRect(item, viewportRect);
+    if (!projectedRect) continue;
+
+    const distance = getDistanceToRectPx(pointerX, pointerY, projectedRect);
+    const radius = isSmallPickupItem(item) ? PICKUP_SMALL_ITEM_RADIUS_PX : PICKUP_INTENT_RADIUS_PX;
+    if (distance > radius) continue;
+
+    let score = -(distance / radius) * PICKUP_DISTANCE_WEIGHT;
+    if (item.trayVisible && !item.placed) score += PICKUP_TRAY_VISIBLE_BONUS;
+    if (distance === 0) score += PICKUP_INSIDE_RECT_BONUS;
+    candidates.push({ item, score, distance, radius });
+  }
+
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => b.score - a.score);
+  const [best, second] = candidates;
+  if (second && best.score - second.score < PICKUP_SWITCH_MARGIN) return null;
+  return best.item;
+}
+
+function isPickupIntentCandidate(item) {
+  if (!item || item === activeItem || item === hintMove?.item) return false;
+  if (!item.mesh.visible) return false;
+  return Boolean(item.placed || item.trayVisible);
+}
+
+function isSmallPickupItem(item) {
+  const bulk = getItemFootprintBulk(item);
+  return bulk.maxCells <= 2 || bulk.maxSpan <= 2;
+}
+
+function getProjectedItemRect(item, viewportRect) {
+  pickupProjectionBox.setFromObject(item.mesh);
+  if (pickupProjectionBox.isEmpty()) return null;
+
+  const { min, max } = pickupProjectionBox;
+  const corners = [
+    [min.x, min.y, min.z],
+    [min.x, min.y, max.z],
+    [min.x, max.y, min.z],
+    [min.x, max.y, max.z],
+    [max.x, min.y, min.z],
+    [max.x, min.y, max.z],
+    [max.x, max.y, min.z],
+    [max.x, max.y, max.z],
+  ];
+
+  let left = Infinity;
+  let right = -Infinity;
+  let top = Infinity;
+  let bottom = -Infinity;
+  let projectedCount = 0;
+
+  for (const [x, y, z] of corners) {
+    pickupProjectionPoint.set(x, y, z).project(camera);
+    if (
+      !Number.isFinite(pickupProjectionPoint.x) ||
+      !Number.isFinite(pickupProjectionPoint.y) ||
+      !Number.isFinite(pickupProjectionPoint.z)
+    ) {
+      continue;
+    }
+    const screenX = viewportRect.left + (pickupProjectionPoint.x + 1) * 0.5 * viewportRect.width;
+    const screenY = viewportRect.top + (1 - pickupProjectionPoint.y) * 0.5 * viewportRect.height;
+    left = Math.min(left, screenX);
+    right = Math.max(right, screenX);
+    top = Math.min(top, screenY);
+    bottom = Math.max(bottom, screenY);
+    projectedCount += 1;
+  }
+
+  if (!projectedCount) return null;
+  return { left, right, top, bottom };
+}
+
+function getDistanceToRectPx(x, y, rect) {
+  const closestX = THREE.MathUtils.clamp(x, rect.left, rect.right);
+  const closestY = THREE.MathUtils.clamp(y, rect.top, rect.bottom);
+  return Math.hypot(x - closestX, y - closestY);
 }
 
 function updatePointer(event, visualOffsetY = 0) {
@@ -3796,8 +3894,7 @@ function smootherStep(t) {
 function rotateActiveOrLast() {
   if (isGameplayLocked() && !activeItem) return;
   if (gamePhase !== 'play') return;
-  const item = activeItem || items.find((entry) => entry.placed && entry.lastValid);
-  if (item) rotateItemByTap(item);
+  if (activeItem) rotateItemByTap(activeItem);
 }
 
 function rotateItemByTap(item) {
