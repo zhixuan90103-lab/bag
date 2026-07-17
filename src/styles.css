@@ -80,6 +80,11 @@ body {
   max-height: min(320px, calc(100dvh - 48px));
 }
 
+/* 任意端：带 hidden 必须不可见（防媒体查询 display 覆盖） */
+.speed-panel[hidden] {
+  display: none !important;
+}
+
 .speed-panel__hint {
   margin: 0 0 10px;
   font-size: 11px;
@@ -464,8 +469,11 @@ button {
     display: none;
   }
 
-  /* 手机上也保留快慢调参（可滚动小面板） */
-  .speed-panel {
+  /*
+   * 手机：仅在未 hidden 时显示 Speed 面板。
+   * 旧写法 display:block 会盖掉 HTML hidden，导致打包到手机仍可见。
+   */
+  .speed-panel:not([hidden]) {
     display: block;
     position: fixed;
     top: auto;
@@ -476,6 +484,10 @@ button {
     max-height: 42vh;
     z-index: 25;
     transform: none;
+  }
+
+  .speed-panel[hidden] {
+    display: none !important;
   }
 }
 
