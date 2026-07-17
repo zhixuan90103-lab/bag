@@ -9,9 +9,13 @@
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
+    "@capacitor/core": "^8.4.2",
+    "@capacitor/ios": "^8.4.2",
     "@vitejs/plugin-basic-ssl": "^2.1.0",
-    "vite": "^7.0.5",
-    "three": "^0.178.0"
+    "three": "^0.178.0",
+    "vite": "^7.0.5"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@capacitor/cli": "^8.4.2"
+  }
 }

@@ -3,6 +3,10 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+:root {
+  --top-ui-safe-offset: calc(env(safe-area-inset-top, 0px) + 22px);
+}
+
 html,
 body {
   width: 100%;
@@ -178,7 +182,7 @@ body {
 
 .topbar {
   position: absolute;
-  top: calc(max(10px, env(safe-area-inset-top)) + 4px);
+  top: max(20px, var(--top-ui-safe-offset));
   left: max(12px, env(safe-area-inset-left));
   right: max(12px, env(safe-area-inset-right));
   z-index: 2;
@@ -340,6 +344,10 @@ button {
 }
 
 @media (max-width: 699px), (pointer: coarse) {
+  :root {
+    --top-ui-safe-offset: calc(env(safe-area-inset-top, 0px) + 30px);
+  }
+
   body {
     padding: 0;
     background: #f6efe4;

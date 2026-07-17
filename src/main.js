@@ -18,6 +18,9 @@ const trayZ = 4.85;
 const trayEntryOffsetX = 1.15;
 const trayLerpAlpha = 0.18;
 const rotationLerpAlpha = 0.12;
+const DRAG_VISUAL_OFFSET_SCREEN_Y = 112;
+const DRAG_MOVE_GAIN_X = 1.3;
+const DRAG_MOVE_GAIN_Z = 1.45;
 /**
  * 意图自动转角 · 形状×可放格子×手势 → Hot/Warm/Cold（见 getIntentCandidate）：
  *   L0 采样 → L1 时机 → L2 格子发现 → 通道分类 → L3 决策 → L4 确认
@@ -32,15 +35,16 @@ const assistCommitLockMs = 900;
  * - warm（多可能）：同样冷静，避免刚进箱第一次就拧
  * - hot（格子唯一）：跳过
  */
-const assistBoxEntryGraceMs = 480;
+const assistBoxEntryGraceMs = 580;
 /**
  * 托盘/上拖入箱钝化保持（cold 全量；warm 半量 dwell；hot 跳过）。
  */
-const assistEntryFromBottomDampenMs = 800;
-/** 本拖第一次帮转额外 dwell（多可能 / 刚进箱更稳） */
-const assistFirstRotateDwellMulWarm = 1.5;
-const assistFirstRotateDwellMulCold = 1.3;
-const assistFirstRotateDwellMulHotFromTray = 1.18;
+const assistEntryFromBottomDampenMs = 950;
+/** 本拖第一次帮转额外 dwell（仅 warm/cold；hot 格子唯一不拖） */
+const assistFirstRotateDwellMulWarm = 1.7;
+const assistFirstRotateDwellMulCold = 1.45;
+/** 全局 dwell 略拉长（仅 warm/cold） */
+const assistGlobalDwellMul = 1.22;
 const autoRotateDistWeight = 3;
 const autoRotateFinalBonus = 0.45;
 const autoRotateStepPenalty = 0.4;
@@ -65,8 +69,8 @@ const autoRotateSlowSlideAxisConfidence = 0.62;
  * 通道：hot=格子唯一可放；warm=分差显著；cold=多解/不明确。
  * Warm 领先：绝对分差 ≥ max(margin×mul, floor)
  */
-const autoRotateWarmMarginMul = 1.2;
-const autoRotateWarmLeadFloor = 0.38;
+const autoRotateWarmMarginMul = 1.35;
+const autoRotateWarmLeadFloor = 0.48;
 /**
  * 近端轨迹位移（格）：用于 settled（几乎不动）与是否在滑。
  */
@@ -90,7 +94,7 @@ function getAutoRotateAssistProfile() {
   if (tier === 'large') {
     return {
       tier,
-      dwellMs: 340,
+      dwellMs: 400,
       cooldownMs: 520,
       maxSnapCells: 0.55,
       hoverMaxSnapCells: 0.7,
@@ -112,7 +116,7 @@ function getAutoRotateAssistProfile() {
   if (tier === 'medium') {
     return {
       tier,
-      dwellMs: 300,
+      dwellMs: 380,
       cooldownMs: 460,
       maxSnapCells: 0.65,
       hoverMaxSnapCells: 0.85,
@@ -133,7 +137,7 @@ function getAutoRotateAssistProfile() {
   // small：偏稳
   return {
     tier,
-    dwellMs: 320,
+    dwellMs: 390,
     cooldownMs: 450,
     maxSnapCells: 0.68,
     hoverMaxSnapCells: 0.82,
@@ -163,6 +167,7 @@ const AUTO_ROTATE_KICKS_LONG = [
 const scaleLerpAlpha = 0.2;
 /** 拖拽中相对入箱尺寸的略放大，便于对准 */
 const DRAG_SCALE_BOOST = 1.06;
+const DRAG_BOX_CLEARANCE = 0.18;
 const CAMERA_FIT_PADDING = 1.22;
 
 /**
@@ -414,6 +419,8 @@ let items = [];
 let trayQueue = [];
 let activeItem = null;
 let dragOffset = new THREE.Vector3();
+let dragStartHit = new THREE.Vector3();
+let dragStartPosition = new THREE.Vector3();
 let candidate = null;
 let pendingPointerItem = null;
 let pendingPointerId = null;
@@ -1393,6 +1400,12 @@ function getDragItemScale() {
   return getBoardItemScale() * DRAG_SCALE_BOOST;
 }
 
+function getDragPickupY(item) {
+  const dragScale = getDragItemScale();
+  const halfHeight = getItemVisualHeight(item) * dragScale / 2;
+  return grid.wallHeight + halfHeight + DRAG_BOX_CLEARANCE;
+}
+
 function setItemScale(item, xzScale, yScale = xzScale) {
   item.mesh.scale.set(xzScale, yScale, xzScale);
   item.targetScale = xzScale;
@@ -1517,14 +1530,22 @@ function beginDragItem(item, event) {
   activeItem.finalIntentPlacement = getFinalItemIntentPlacement(activeItem);
   // 超过拖拽阈值后才按入箱尺寸过渡，避免单点点击也把物品拿起。
   setItemScaleTarget(activeItem, getDragItemScale());
-  activeItem.mesh.position.y = grid.pickupHeight;
+  const pickupY = getDragPickupY(activeItem);
+  activeItem.mesh.position.y = pickupY;
   activeItem.placed = false;
   setItemShadow(activeItem, false);
   updatePointer(event);
-  dragPlane.constant = -grid.pickupHeight;
+  dragPlane.constant = -pickupY;
   raycaster.ray.intersectPlane(dragPlane, hitPoint);
   dragOffset.copy(activeItem.mesh.position).sub(hitPoint);
   dragOffset.y = 0;
+  updatePointer(event, DRAG_VISUAL_OFFSET_SCREEN_Y);
+  if (raycaster.ray.intersectPlane(dragPlane, hitPoint)) {
+    activeItem.mesh.position.x = hitPoint.x + dragOffset.x;
+    activeItem.mesh.position.z = hitPoint.z + dragOffset.z;
+    dragStartHit.copy(hitPoint);
+    dragStartPosition.copy(activeItem.mesh.position);
+  }
   showGridGuide(0);
   updateGhost(null);
 }
@@ -1544,10 +1565,10 @@ function onPointerMove(event) {
   }
   if (!activeItem || isGameplayLocked()) return;
   event.preventDefault();
-  updatePointer(event);
+  updatePointer(event, DRAG_VISUAL_OFFSET_SCREEN_Y);
   if (!raycaster.ray.intersectPlane(dragPlane, hitPoint)) return;
-  activeItem.mesh.position.x = hitPoint.x + dragOffset.x;
-  activeItem.mesh.position.z = hitPoint.z + dragOffset.z;
+  activeItem.mesh.position.x = dragStartPosition.x + (hitPoint.x - dragStartHit.x) * DRAG_MOVE_GAIN_X;
+  activeItem.mesh.position.z = dragStartPosition.z + (hitPoint.z - dragStartHit.z) * DRAG_MOVE_GAIN_Z;
   sampleDragTrail(activeItem, activeItem.mesh.position);
   candidate = getIntentCandidate(activeItem, activeItem.mesh.position);
   updateActiveItemDragScale();
@@ -1615,10 +1636,10 @@ function findItemRoot(object) {
   return current?.parent === itemGroup ? current : null;
 }
 
-function updatePointer(event) {
+function updatePointer(event, visualOffsetY = 0) {
   const rect = canvas.getBoundingClientRect();
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  pointer.y = -((event.clientY - visualOffsetY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
 }
 
@@ -2410,29 +2431,144 @@ function baseIntentScoreMargin(ctx) {
 }
 
 /**
+ * 全盘：当前物品各互异脚印还有多少合法落点。
+ * 用于「剩余格子只剩竖/横一种」→ Hot，不必等。
+ * 互异脚印 ≤3 时全盘扫可接受。
+ */
+function analyzeBoardOrientFill(item) {
+  const orients = getDistinctRotationOptions(item, { includeCurrent: true });
+  if (orients.length === 0 || orients.length > 3) return null;
+
+  const byShape = new Map();
+  for (const { rotation, shape, key: shapeKey, isCurrent, steps } of orients) {
+    let count = 0;
+    let sample = null;
+    const maxX = grid.cols - shape[0].length;
+    const maxY = grid.rows - shape.length;
+    if (maxX < 0 || maxY < 0) {
+      byShape.set(shapeKey, {
+        shapeKey, rotation, isCurrent, steps, count: 0, sample: null, shape
+      });
+      continue;
+    }
+    for (let gy = 0; gy <= maxY; gy += 1) {
+      for (let gx = 0; gx <= maxX; gx += 1) {
+        const placement = getPlacement(item, gx, gy, shape);
+        if (!placement.valid) continue;
+        count += 1;
+        if (!sample) {
+          sample = {
+            gx,
+            gy,
+            shape,
+            rotation,
+            shapeKey,
+            baseLevel: placement.baseLevel,
+            valid: true,
+            distanceSq: 0,
+            score: 0,
+            isCurrent: Boolean(isCurrent),
+            steps
+          };
+        }
+      }
+    }
+    const prev = byShape.get(shapeKey);
+    if (!prev || count > prev.count || (count === prev.count && steps < prev.steps)) {
+      byShape.set(shapeKey, {
+        shapeKey,
+        rotation,
+        isCurrent: Boolean(isCurrent),
+        steps,
+        count,
+        sample,
+        shape
+      });
+    }
+  }
+
+  const placeable = [...byShape.values()].filter((e) => e.count > 0);
+  const currentEntry = placeable.find((e) => e.isCurrent) || null;
+  const others = placeable.filter((e) => !e.isCurrent);
+  // 全盘只剩一种脚印能放，且不是当前朝向（或当前 0 合法）
+  if (placeable.length === 1 && !placeable[0].isCurrent) {
+    return {
+      uniqueShapeKey: placeable[0].shapeKey,
+      uniqueRotation: placeable[0].rotation,
+      sample: placeable[0].sample,
+      currentHasAny: false
+    };
+  }
+  if ((!currentEntry || currentEntry.count === 0) && others.length === 1) {
+    return {
+      uniqueShapeKey: others[0].shapeKey,
+      uniqueRotation: others[0].rotation,
+      sample: others[0].sample,
+      currentHasAny: Boolean(currentEntry && currentEntry.count > 0)
+    };
+  }
+  return null;
+}
+
+/**
  * 形状 × 可放格子 → 通道
- * hot  = 唯一其它可放脚印
+ * hot  = 邻域或全盘唯一其它可放脚印（剩余格子只剩一种摆法）
  * warm = 多脚印但 best 显著领先
  * cold = 平手/不明确
  */
 function classifyIntentChannel(ctx, region) {
-  const { lastPiece, lastFill } = ctx;
+  const { item, lastPiece, lastFill, worldPosition } = ctx;
   const best = region.bestCandidate;
-  if (!best) return { channel: 'cold', scoreMargin: baseIntentScoreMargin(ctx), lead: 0 };
+  const scoreMargin = baseIntentScoreMargin(ctx);
 
-  if (region.uniqueOtherShapeKey) {
-    return { channel: 'hot', scoreMargin: 0, lead: Infinity };
+  // 1) 邻域唯一
+  if (region.uniqueOtherShapeKey && best && !best.isCurrent) {
+    return { channel: 'hot', scoreMargin: 0, lead: Infinity, hotReason: 'region' };
   }
+
+  // 2) 全盘剩余格子只剩一种脚印（如图：两侧只剩竖槽）
+  const boardUnique = analyzeBoardOrientFill(item);
+  if (boardUnique?.uniqueShapeKey) {
+    // 尽量挂上邻域 best；没有则用全盘 sample 补候选
+    let hotBest = best && best.shapeKey === boardUnique.uniqueShapeKey ? best : null;
+    if (!hotBest && boardUnique.sample) {
+      const distSq = footprintDistanceSq(
+        worldPosition,
+        boardUnique.sample.gx,
+        boardUnique.sample.gy,
+        boardUnique.sample.shape
+      );
+      hotBest = {
+        ...boardUnique.sample,
+        distanceSq: distSq,
+        score: -autoRotateDistWeight * (Math.sqrt(distSq) / Math.max(grid.cell, 1e-6)),
+        isCurrent: false,
+        steps: minRotationSteps(item.rotation, boardUnique.uniqueRotation)
+      };
+    }
+    if (hotBest && hotBest.rotation !== item.rotation) {
+      return {
+        channel: 'hot',
+        scoreMargin: 0,
+        lead: Infinity,
+        hotReason: 'board',
+        hotBest
+      };
+    }
+  }
+
   if (
     lastPiece
     && lastFill?.needsRotateToFill
     && lastFill.preferredRotation != null
+    && best
     && best.rotation === lastFill.preferredRotation
   ) {
-    return { channel: 'hot', scoreMargin: 0, lead: Infinity };
+    return { channel: 'hot', scoreMargin: 0, lead: Infinity, hotReason: 'last' };
   }
 
-  const scoreMargin = baseIntentScoreMargin(ctx);
+  if (!best) return { channel: 'cold', scoreMargin, lead: 0 };
+
   const rival = region.bestRivalOther;
   if (!rival) {
     return { channel: 'warm', scoreMargin, lead: Infinity };
@@ -2503,21 +2639,32 @@ function decideIntentRotation(ctx, region) {
     lastPiece, lastFill, trend, now
   } = ctx;
 
-  const best = region.bestCandidate;
+  const classified = classifyIntentChannel(ctx, region);
+  const { channel, scoreMargin, hotBest } = classified;
+  const best = (channel === 'hot' && hotBest) ? hotBest : region.bestCandidate;
+
   if (!best || !best.valid) {
     return { ok: false, clearIntent: true };
   }
   if (best.isCurrent || best.rotation === ctx.item.rotation) {
     return { ok: false, clearIntent: true };
   }
-  if (best.distanceSq > region.maxDistanceSq) {
+  // Hot 全盘唯一：放宽够近（剩余竖槽可能不在手指正下）
+  const maxDist = channel === 'hot' && classified.hotReason === 'board'
+    ? region.maxDistanceSq * 4
+    : region.maxDistanceSq;
+  if (best.distanceSq > maxDist && classified.hotReason !== 'board') {
+    return { ok: false, clearIntent: true };
+  }
+  if (
+    classified.hotReason === 'board'
+    && best.distanceSq > (grid.cell * 8) ** 2
+  ) {
+    // 仍要求别太远，但允许对准侧槽
     return { ok: false, clearIntent: true };
   }
 
-  const classified = classifyIntentChannel(ctx, region);
-  const { channel, scoreMargin } = classified;
-
-  // Cold + Warm：进箱冷静期不帮转（多可能第一次别太快）；Hot 唯一格子仍可快
+  // Cold + Warm：进箱冷静期；Hot（格子唯一）立刻可进确认
   if (
     (channel === 'cold' || channel === 'warm')
     && isInAssistEntryGrace(ctx.item, now)
@@ -2527,11 +2674,10 @@ function decideIntentRotation(ctx, region) {
 
   /**
    * 手势 × 通道：
-   * hot：settled | slowSlide | scrub
-   * warm：第一次本拖更认停稳；之后可用 slowSlide
-   * cold：须停稳或刷边
+   * hot：settled | slowSlide | scrub（尽快）
+   * warm / cold：须停稳或刷边
    */
-  if (channel === 'cold') {
+  if (channel === 'cold' || channel === 'warm') {
     if (
       !trend.settled
       && !trend.edgeScrub
@@ -2539,15 +2685,6 @@ function decideIntentRotation(ctx, region) {
     ) {
       return { ok: false, clearIntent: true };
     }
-  }
-  if (
-    channel === 'warm'
-    && !ctx.item.assistDidRotateThisDrag
-    && !trend.settled
-    && !trend.edgeScrub
-  ) {
-    // 多可能时第一次：须停稳，避免刚进箱慢滑就拧
-    return { ok: false, clearIntent: true };
   }
 
   if (channel !== 'hot') {
@@ -2597,8 +2734,8 @@ function confirmAndApplyIntentRotation(ctx, region, best, channel) {
   } = ctx;
 
   let hoverCellKey;
-  if (channel === 'hot' && region.uniqueOtherShapeKey) {
-    hoverCellKey = `hot:${region.uniqueOtherShapeKey}`;
+  if (channel === 'hot') {
+    hoverCellKey = `hot:${best.shapeKey}`;
   } else if (channel === 'warm') {
     hoverCellKey = `warm:${best.shapeKey}:${Math.floor(best.gx / 2)},${Math.floor(best.gy / 2)}`;
   } else if (lastPiece && lastFill?.needsRotateToFill) {
@@ -2636,45 +2773,42 @@ function confirmAndApplyIntentRotation(ctx, region, best, channel) {
   else if (entryDragDown) dwellScale *= 0.82;
 
   if (channel === 'hot') {
+    // 格子唯一（含全盘只剩竖/横）：尽快，不吃全局拉长
     if (trend.settled || trend.edgeScrub) {
-      dwellScale *= 0.42;
-      if (!region.currentSnap0Valid) dwellScale *= 0.88;
-      dwellScale = Math.min(dwellScale, 0.48);
+      dwellScale *= 0.32;
+      dwellScale = Math.min(dwellScale, 0.38);
     } else if (trend.slowSlide) {
-      dwellScale *= 0.62;
-      dwellScale = Math.min(dwellScale, 0.85);
+      dwellScale *= 0.45;
+      dwellScale = Math.min(dwellScale, 0.55);
     } else {
-      dwellScale *= 0.7;
+      dwellScale *= 0.5;
     }
   } else if (channel === 'warm') {
-    // 多可能：整体比上一版更稳
     if (trend.settled || trend.edgeScrub) {
-      dwellScale *= 0.72;
-      dwellScale = Math.min(dwellScale, 0.85);
+      dwellScale *= 0.88;
+      dwellScale = Math.min(dwellScale, 1.05);
     } else if (trend.slowSlide) {
-      dwellScale *= 0.95;
-      dwellScale = Math.min(dwellScale, 1.1);
+      dwellScale *= 1.12;
+      dwellScale = Math.min(dwellScale, 1.28);
     } else {
-      dwellScale *= 1.0;
+      dwellScale *= 1.15;
     }
   } else {
-    if (trend.slowSlide && !entryDampenCold) dwellScale *= 1.35;
+    if (trend.slowSlide && !entryDampenCold) dwellScale *= 1.45;
     if (profile.tier === 'small' && !lastPiece) {
-      dwellScale = Math.max(dwellScale, 0.95);
+      dwellScale = Math.max(dwellScale, 1.05);
     }
   }
 
-  // 本拖第一次帮转再拉长（刚进箱 / 多可能最容易抢）
+  // 第一次帮转加长：仅 warm/cold（多可能）
   const firstAssist = !item.assistDidRotateThisDrag;
   if (firstAssist) {
     if (channel === 'warm') dwellScale *= assistFirstRotateDwellMulWarm;
     else if (channel === 'cold') dwellScale *= assistFirstRotateDwellMulCold;
-    else if (channel === 'hot' && !item.assistFromPlacedPickup) {
-      dwellScale *= assistFirstRotateDwellMulHotFromTray;
-    }
   }
 
-  const dwellNeed = profile.dwellMs * dwellScale;
+  const globalMul = channel === 'hot' ? 1 : assistGlobalDwellMul;
+  const dwellNeed = profile.dwellMs * globalMul * dwellScale;
   if (now - (item.autoRotateIntentSince ?? 0) < dwellNeed) {
     return current;
   }
