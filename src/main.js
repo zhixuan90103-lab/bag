@@ -36,7 +36,13 @@ const PICKUP_SWITCH_MARGIN = 0.2;
  * 调「普通 Hot」→ 只改 hotSoft；禁止 if (channel==='hot') 一把抓
  * 详：docs/research/INTENT-PARAM-PRIORITY.md
  */
+/**
+ * 手动旋转仅限物品区短点；拖中/箱内无手动转。
+ * 托盘点转后写入 anchor，进箱意图改角须过更高门槛（见 decideIntentRotation）。
+ */
 const manualLockMs = 800;
+/** 托盘声明角：非 eager 场景不得拧走；eager 须停稳/刷边 */
+const TRAY_CHOICE_OVERRIDE_SCENARIOS = new Set(['lastMust', 'uniqueBoard', 'uniqueRegionHard']);
 /**
  * Ghost 首次进棋盘冷静期（仅 warm/cold 场景吃；场景表 skipEntryGrace 可跳过）
  */
@@ -437,7 +443,6 @@ app.innerHTML = `
     <strong id="dragSpeedValue">—</strong>
     <span id="dragSpeedDetail" class="drag-speed-hud__detail"></span>
   </div>
-  <button id="rotateBtn" class="rotate-btn" aria-label="旋转">↻</button>
   <div id="toast" class="toast">订单完成</div>
   <div id="settlePanel" class="settle-panel" hidden>
     <strong id="settleTitle">订单完成</strong>
@@ -520,7 +525,6 @@ const settleTitleEl = document.querySelector('#settleTitle');
 const settleSubEl = document.querySelector('#settleSub');
 const nextLevelBtn = document.querySelector('#nextLevelBtn');
 const replayBtn = document.querySelector('#replayBtn');
-const rotateBtn = document.querySelector('#rotateBtn');
 const resetBtn = document.querySelector('#resetBtn');
 const hintBtn = document.querySelector('#hintBtn');
 const undoBtn = document.querySelector('#undoBtn');
@@ -711,7 +715,6 @@ canvas.addEventListener('pointerdown', onPointerDown);
 canvas.addEventListener('pointermove', onPointerMove);
 canvas.addEventListener('pointerup', onPointerUp);
 canvas.addEventListener('pointercancel', onPointerUp);
-rotateBtn.addEventListener('click', rotateActiveOrLast);
 resetBtn.addEventListener('click', resetLevel);
 hintBtn.addEventListener('click', showHint);
 undoBtn.addEventListener('click', undoLastMove);
@@ -1770,10 +1773,15 @@ function beginDragItem(item, event) {
   activePointerId = event.pointerId;
   activeItem.wasPlaced = activeItem.placed;
   activeItem.dragStartRotation = activeItem.rotation;
+  // 本拖意图改角的锚点：托盘点转后的角 / 箱内拿起时的角
+  activeItem.intentAnchorRotation = activeItem.rotation;
   activeItem.lastAutoRotationAt = 0;
   activeItem.autoRotateIntentKey = null;
   activeItem.autoRotateIntentSince = 0;
-  activeItem.manualLockUntil = 0;
+  // 托盘点转留下的 manualLock 若仍有效则保留，避免刚拧完就进箱被秒帮转
+  if ((activeItem.manualLockUntil ?? 0) < performance.now()) {
+    activeItem.manualLockUntil = 0;
+  }
   activeItem.assistCommitUntil = 0;
   activeItem.assistCommitRotation = null;
   activeItem.assistCommitPosition = null;
@@ -1851,7 +1859,8 @@ function onPointerUp(event) {
     pendingPointerId = null;
     pendingPointerEvent = null;
     canvas.releasePointerCapture(event.pointerId);
-    if (event.type !== 'pointercancel' && !item.placed) rotateItemByTap(item);
+    // 仅物品区短点旋转（未入箱 + 托盘可见）；箱内/拖中不可点转
+    if (event.type !== 'pointercancel') rotateItemByTap(item);
     return;
   }
   if (!activeItem) return;
@@ -2765,11 +2774,10 @@ function passIntentHardGates(ctx) {
     return { ok: false, clearIntent: true };
   }
 
+  // 手动优先：锁内全场景静默（含 lastMust，禁止穿锁）
   const manualLockLeft = (item.manualLockUntil ?? 0) - now;
   if (manualLockLeft > 0) {
-    if (!(lastPiece && lastFill?.needsRotateToFill && manualLockLeft < manualLockMs * 0.35)) {
-      return { ok: false, clearIntent: true };
-    }
+    return { ok: false, clearIntent: true };
   }
 
   // 绿不抢
@@ -3186,7 +3194,23 @@ function decideIntentRotation(ctx, region, classified, scenario) {
     return { ok: false, clearIntent: true };
   }
 
-  // P5 防反拧：只拦「换到另一角」，不拦第一次帮转
+  // 托盘/起拖声明角：非 eager 不得拧走；eager 须停稳或刷边（防乱杀玩家在物品区选的角）
+  const anchor = item.intentAnchorRotation;
+  if (
+    anchor != null
+    && best.rotation !== anchor
+    && best.rotation !== item.rotation
+  ) {
+    const canOverrideTray = TRAY_CHOICE_OVERRIDE_SCENARIOS.has(sc.id);
+    if (!canOverrideTray) {
+      return { ok: false };
+    }
+    if (!trend.settled && !trend.edgeScrub) {
+      return { ok: false };
+    }
+  }
+
+  // P5 防反拧：只拦「相对上次帮转」换到另一角
   if (
     isAssistReverseTwist(item, best.rotation)
     && !sc.allowCommitOverride
@@ -3387,6 +3411,8 @@ function confirmAndApplyIntentRotation(ctx, region, best, channel, scenario) {
   item.assistCommitRotation = best.rotation;
   item.assistCommitUntil = now + INTENT_ANTI_REVERSE.commitLockMs;
   item.assistCommitPosition = { x: worldPosition.x, z: worldPosition.z };
+  // 帮转成功后锚点跟到新角，避免旧托盘角继续误挡后续合理消歧
+  item.intentAnchorRotation = best.rotation;
   item.lastIntentChannel = channel;
   item.lastIntentScenario = sc.id;
   item.assistDidRotateThisDrag = true;
@@ -4385,53 +4411,29 @@ function smootherStep(t) {
   return clamped * clamped * clamped * (clamped * (clamped * 6 - 15) + 10);
 }
 
-function rotateActiveOrLast() {
-  if (isGameplayLocked() && !activeItem) return;
-  if (gamePhase !== 'play') return;
-  if (activeItem) rotateItemByTap(activeItem);
-}
-
+/**
+ * 仅物品区短点旋转：托盘可见且未入箱、未在拖中。
+ * 箱内已放置 / 拖拽中：不可手动转（无旋转钮）。
+ */
 function rotateItemByTap(item) {
   if (!item || gamePhase !== 'play' || isGameplayLocked()) return;
+  if (activeItem) return;
+  if (item.placed || !item.trayVisible) return;
+
   clearHint();
-  const previous = item.rotation;
   item.rotation = (item.rotation + 1) % 4;
   setItemRotationTarget(item, item.rotation);
+  item.trayRotation = item.rotation;
+  item.playerChosenRotation = item.rotation;
+  item.intentAnchorRotation = item.rotation;
   item.manualLockUntil = performance.now() + manualLockMs;
-  // 手动转也清掉帮转提交锁，避免短时不能再意图帮转
   item.assistCommitUntil = 0;
   item.assistCommitRotation = null;
   item.assistCommitPosition = null;
   item.lastIntentScenario = null;
+  item.finalIntentPlacement = null;
   clearAutoRotateIntent(item);
-
-  if (item === activeItem) {
-    candidate = getCandidate(item, item.mesh.position);
-    showGridGuide(candidate?.guideLevel ?? candidate?.displayBaseLevel ?? candidate?.baseLevel ?? 0);
-    updateGhost(candidate);
-    return;
-  }
-
-  if (!item.placed) {
-    item.trayRotation = item.rotation;
-    item.finalIntentPlacement = null;
-    layoutTrayQueue({ animate: true });
-    return;
-  }
-
-  const shape = rotateShape(item.shape, item.rotation);
-  if (canPlace(item, item.gridX, item.gridY, shape)) {
-    const placement = getPlacement(item, item.gridX, item.gridY, shape);
-    item.mesh.position.copy(gridToWorld(item.gridX, item.gridY, shape));
-    item.level = placement.baseLevel;
-    const boardScale = getBoardItemScale();
-    item.mesh.position.y = getBoardItemY(item, boardScale, item.level);
-    setItemScale(item, boardScale);
-    refreshStatus();
-  } else {
-    item.rotation = previous;
-    setItemRotationTarget(item, item.rotation);
-  }
+  layoutTrayQueue({ animate: true });
 }
 
 function resetLevel() {

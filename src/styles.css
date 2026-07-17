@@ -328,23 +328,10 @@ button {
   font-size: 13px;
 }
 
-.rotate-btn {
-  position: absolute;
-  right: max(18px, env(safe-area-inset-right));
-  bottom: calc(max(18px, env(safe-area-inset-bottom)) + 4px);
-  z-index: 2;
-  width: 66px;
-  height: 66px;
-  border-radius: 50%;
-  background: #f27f3d;
-  font-size: 34px;
-  box-shadow: 0 12px 28px rgba(190, 91, 45, 0.28);
-}
-
 .toast {
   position: absolute;
   left: 50%;
-  bottom: calc(max(22px, env(safe-area-inset-bottom)) + 84px);
+  bottom: calc(max(22px, env(safe-area-inset-bottom)) + 18px);
   z-index: 3;
   padding: 12px 18px;
   border-radius: 8px;

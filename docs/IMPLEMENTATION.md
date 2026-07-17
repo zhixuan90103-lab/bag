@@ -180,7 +180,6 @@ function getBoardItemScale() {
 - `#hintBtn`
 - `#undoBtn`
 - `#resetBtn`
-- `#rotateBtn`
 - `#toast`
 - `#orientationGate`
 
@@ -189,9 +188,9 @@ function getBoardItemScale() {
 - 左侧订单卡显示“今日订单”和进度。
 - 右侧按钮依次为“提示”“撤销”“重置”。
 
-右下角：
+旋转：
 
-- 圆形旋转按钮 `↻`。
+- **无**右下角旋转钮；仅物品区短点转（见 §19）。
 
 Toast：
 
@@ -793,17 +792,11 @@ item.targetRotationY = -rotation * Math.PI / 2;
 item.mesh.rotation.y += delta * rotationLerpAlpha;
 ```
 
-右下角按钮：
+手动旋转（2026-07-17）：
 
-```js
-rotateBtn.addEventListener('click', rotateActiveOrLast);
-```
-
-逻辑：
-
-- 如果正在拖拽，旋转当前物品。
-- 如果没有拖拽，尝试旋转一个已放置且有 `lastValid` 的物品。
-- 如果已放置物品旋转后不可放，恢复原角度。
+- 仅物品区 `trayVisible && !placed` 短点 `rotateItemByTap`。
+- 拖中 / 箱内已放置不可转；无旋转钮。
+- 托盘声明角见 §19 `intentAnchorRotation`。
 
 ## 17. 3D 体素放置规则
 
@@ -1008,70 +1001,59 @@ new THREE.EdgesGeometry(ghost.geometry)
 
 边框透明度 `0.95`。
 
-## 19. 意图自动转角（v2 · Hot/Warm/Cold）
+## 19. 意图自动转角（v3 · 场景表）
 
-权威变更表：`docs/research/INTENT-IMPLEMENTATION-CHANGELOG.md`。  
-灵敏度检索：`docs/research/SYNTHESIS-intent-sensitivity.md`。  
-实现：`src/main.js` · UI：`src/styles.css`。
+权威同步：`docs/research/INTENT-SCENARIO-SYNC-2026-07-17.md`。  
+调参纪律：`docs/research/INTENT-PARAM-PRIORITY.md`。  
+实现：`src/main.js`（`INTENT_SCENARIOS` / `INTENT_ANTI_REVERSE` / `resolveIntentScenario`）。
 
 ### 模型
 
-**形状 × 可放格子（红色 Ghost）× 手势（物品速度）→ 通道 → 确认帮转。**
+**棋盘占位 × 手中脚印 × 手势 → 场景档 → 帮转。**  
+P0 硬门 → P1 格子 → P2 场景 → P3 手势 → P4 时延 → P5 防反拧。
 
 ### 主路径
 
 ```text
 L0 sampleIntentContext
-L1 passIntentContextGates
-L2 analyzeRegionPlaceableOrients + analyzeBoardOrientFill
-   classifyIntentChannel → hot | warm | cold
-L1b passIntentTimingGates(channel)
-L3 decideIntentRotation
-L4 confirmAndApplyIntentRotation
+P0 passIntentHardGates
+P1 analyzeRegionPlaceableOrients + classifyIntentChannel
+P2 resolveIntentScenario → lastMust | uniqueBoard | uniqueRegionHard | hotSoft | warm | cold
+P3 passIntentGestureGates(scenario)
+P4 passIntentTimingGates(scenario)
+L3 decideIntentRotation (+ 防反拧)
+L4 confirmAndApplyIntentRotation (场景 dwell)
 ```
 
-| 通道 | 条件 | 手势 | 延迟 |
+| 场景 | 条件 | 手势 | 时延 |
 |------|------|------|------|
-| hot | 邻域或**全盘**只剩一种其它可放脚印 | 停稳/慢滑 | 短 |
-| warm | 分差显著 | **须停稳** | 中长 |
-| cold | 多解/不明确 | 须停稳 | 长 + 进箱冷静/钝化 |
+| lastMust | 最后一块必须转 | notFast | 尽早；可越过提交锁 |
+| uniqueBoard | 全盘唯一其它脚印 | notFast | 尽早 |
+| uniqueRegionHard | 邻域唯一且 snap0 红 | notFast | 尽早 |
+| hotSoft | 其它 Hot | aiming | 默认，不硬顶极短 |
+| warm / cold | 多解 | 更严 | 冷静/钝化 |
 
-### 速度（`speedTuning`，Speed 面板可改）
+### 手动旋转与最后一块
 
-| 档 | 默认（格/秒） | 帮转 |
-|----|----------------|------|
-| settled | &lt; 0.38 | 可评估 |
-| slowSlide | ～ 0.82 | 可评估 |
-| normal | ～ 1.6 | 否 |
-| fast | ≥ 1.6 | 否 |
+- **手动旋转**：仅物品区（`trayVisible && !placed`）短点 `rotateItemByTap`；**无旋转钮**；箱内/拖中不可转。  
+- 托盘点转写入 `intentAnchorRotation` + `manualLock`；意图改走该角仅 `lastMust` / `uniqueBoard` / `uniqueRegionHard` 且停稳/刷边。  
+- **最后一块**：禁止拿起强转；入箱后 `lastMust` 加码。
 
-- 速度 = **物品**近端移动速度 ÷ **一格边长**。  
-- 近端几乎不动 → **立刻 settled**（不被历史轨迹拖成 normal）。  
-- 顶部 HUD：拖拽时显示「慢速/快速」；侧栏 **Speed 快慢** 面板调阈值。  
-- `?intentDebug=1`：详细档/通道。
+### 速度
 
-### 进箱
+| 档 | 默认（格/秒） |
+|----|----------------|
+| settled | &lt; 0.38 |
+| slowSlide | ～ 0.82 |
+| normal | ～ 1.6 |
+| fast | ≥ 1.6 |
 
-- Ghost 脚印盖住棋盘格才解锁；归位托盘清零。  
-- 冷静/上拖钝化仅 **warm/cold**；**hot 跳过**。
+HUD / Speed 面板暂隐；`?intentDebug=1` 显示场景 id。
 
-### 分档（`getAutoRotateAssistProfile`）
+### 相关符号
 
-- small / medium / large：`regionRadiusCells`、dwell 等。  
-- 大件更钝；贴边仅轻消歧。
-
-### 轻消歧（非触发器）
-
-- 刷边 → 轻贴边偏好  
-- `getStableMotionHint` → 多朝向时偏置分数  
-- 最后一块 `analyzeLastPieceFill` → 全盘唯一/必须转时加权或扩大 R  
-
-### 相关函数
-
-- `analyzeRegionPlaceableOrients`（核心）· `getIntentCandidate`  
-- `getDistinctRotationOptions({ includeCurrent })` · `footprintDistanceSq`  
-- `analyzeLastPieceFill` · `getDragTrend` · `getStableMotionHint`  
-- `isPlacementStillValid` · `applyIntentRotation`
+- `INTENT_SCENARIOS` · `INTENT_ANTI_REVERSE` · `resolveIntentScenario`  
+- `analyzeRegionPlaceableOrients` · `analyzeBoardOrientFill` · `analyzeLastPieceFill`
 
 ## 20. 提示自动摆放
 
