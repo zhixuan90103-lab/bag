@@ -19,22 +19,28 @@ const trayEntryOffsetX = 1.15;
 const trayLerpAlpha = 0.18;
 const rotationLerpAlpha = 0.12;
 /**
- * 意图自动转角 · L0–L4（见 getIntentCandidate）：
- *   L0 采样 → L1 准入(Ghost/手势) → L2 落点可放朝向 → L3 决策 → L4 确认提交
- * 落点看红色 Ghost；贴边/方向仅轻消歧；分档只调灵敏度。少惊吓 > 少点击。
+ * 意图自动转角 · 形状×可放格子×手势 → Hot/Warm/Cold（见 getIntentCandidate）：
+ *   L0 采样 → L1 时机 → L2 格子发现 → 通道分类 → L3 决策 → L4 确认
+ * 落点看红色 Ghost；少惊吓 > 少点击。
  */
 const manualLockMs = 800;
 /** 帮转后短时不反拧（区域跨缝时的防抖）；唯一可放 / 刷边 / 最后一块可覆盖 */
 const assistCommitLockMs = 900;
 /**
- * 本拖 Ghost 首次进棋盘后的冷静期（仅多朝向/不明确时生效）。
- * 格子上只剩一种可放朝向 → 跳过，不必等。
+ * Ghost 首次进棋盘冷静期：
+ * - cold：全程
+ * - warm（多可能）：同样冷静，避免刚进箱第一次就拧
+ * - hot（格子唯一）：跳过
  */
-const assistBoxEntryGraceMs = 450;
+const assistBoxEntryGraceMs = 480;
 /**
- * 托盘/上拖入箱钝化保持（仅多朝向时生效；唯一可放跳过）。
+ * 托盘/上拖入箱钝化保持（cold 全量；warm 半量 dwell；hot 跳过）。
  */
-const assistEntryFromBottomDampenMs = 750;
+const assistEntryFromBottomDampenMs = 800;
+/** 本拖第一次帮转额外 dwell（多可能 / 刚进箱更稳） */
+const assistFirstRotateDwellMulWarm = 1.5;
+const assistFirstRotateDwellMulCold = 1.3;
+const assistFirstRotateDwellMulHotFromTray = 1.18;
 const autoRotateDistWeight = 3;
 const autoRotateFinalBonus = 0.45;
 const autoRotateStepPenalty = 0.4;
@@ -42,27 +48,25 @@ const autoRotateStepPenalty = 0.4;
 const autoRotateMotionDirBonus = 0.38;
 const autoRotateMotionConfidenceMin = 0.72;
 /**
- * 速度分档（格/秒，相对 grid.cell）——产品定义：
- *   settled   < 0.38          停稳（再压低，须更「停住」）
- *   slowSlide 0.38 ~ 0.68     慢滑对准（可帮转；上限再压低）
- *   normal    0.68 ~ 1.6      正常挪位（不转）
- *   fast      ≥ 1.6           快滑/甩（不转）
+ * 速度分档（格/秒）——ballistic 不转，fine 才评：
+ *   settled   < 0.38
+ *   slowSlide 0.38 ~ 0.82   （略放宽 fine，不开放 normal）
+ *   normal    0.82 ~ 1.6
+ *   fast      ≥ 1.6
  */
 const autoRotateSettledSpeedCells = 0.38;
-const autoRotateSlowSlideMaxCells = 0.68;
+const autoRotateSlowSlideMaxCells = 0.82;
 const autoRotateNormalMaxCells = 1.6;
-/** 兼容旧名：均速低于此曾作 hover；现仅作参考/方向消歧 */
 const autoRotateHoverSpeedCells = autoRotateSettledSpeedCells;
 const autoRotateAimSpeedCells = autoRotateSlowSlideMaxCells;
 const autoRotateMotionDirMaxSpeedCells = autoRotateSlowSlideMaxCells;
-/** 慢滑要求主轴置信（左右或上下够稳，不是乱划） */
 const autoRotateSlowSlideAxisConfidence = 0.62;
 /**
- * 2A（可试完再改）：多朝向消歧是否必须停稳。
- * true = 慢滑只处理「唯一可放」；多解须 settled。
- * false = 慢滑也可多朝向消歧（手感不够再关）。
+ * 通道：hot=格子唯一可放；warm=分差显著；cold=多解/不明确。
+ * Warm 领先：绝对分差 ≥ max(margin×mul, floor)
  */
-const autoRotateMultiOrientNeedsSettled = true;
+const autoRotateWarmMarginMul = 1.2;
+const autoRotateWarmLeadFloor = 0.38;
 /**
  * 近端轨迹位移（格）：用于 settled（几乎不动）与是否在滑。
  */
@@ -1504,6 +1508,7 @@ function beginDragItem(item, event) {
   activeItem.assistBoxUnlocked = Boolean(activeItem.placed);
   activeItem.assistBoxUnlockedAt = 0;
   activeItem.assistEnteredFromBottomAt = 0;
+  activeItem.assistDidRotateThisDrag = false;
   activeItem.dragTrail = [];
   activeItem.previousPlacement = activeItem.placed
     ? { gx: activeItem.gridX, gy: activeItem.gridY, level: activeItem.level, rotation: activeItem.rotation }
@@ -2390,8 +2395,62 @@ function passIntentContextGates(ctx) {
   return { ok: true };
 }
 
-/** L1 后半：冷却 / 提交锁（依赖 L2 的 unique 信息，故在发现后调用） */
-function passIntentTimingGates(ctx, region) {
+/**
+ * 基础 scoreMargin（档位底）
+ */
+function baseIntentScoreMargin(ctx) {
+  const { profile, bulk, lastPiece, trend } = ctx;
+  let scoreMargin = trend.settled || trend.edgeScrub
+    ? profile.hoverScoreMargin
+    : profile.scoreMargin;
+  if (bulk.isLarge) scoreMargin = Math.max(scoreMargin, 0.55);
+  if (lastPiece) scoreMargin *= 0.55;
+  if (profile.tier === 'small') scoreMargin = Math.max(scoreMargin, 0.42);
+  return scoreMargin;
+}
+
+/**
+ * 形状 × 可放格子 → 通道
+ * hot  = 唯一其它可放脚印
+ * warm = 多脚印但 best 显著领先
+ * cold = 平手/不明确
+ */
+function classifyIntentChannel(ctx, region) {
+  const { lastPiece, lastFill } = ctx;
+  const best = region.bestCandidate;
+  if (!best) return { channel: 'cold', scoreMargin: baseIntentScoreMargin(ctx), lead: 0 };
+
+  if (region.uniqueOtherShapeKey) {
+    return { channel: 'hot', scoreMargin: 0, lead: Infinity };
+  }
+  if (
+    lastPiece
+    && lastFill?.needsRotateToFill
+    && lastFill.preferredRotation != null
+    && best.rotation === lastFill.preferredRotation
+  ) {
+    return { channel: 'hot', scoreMargin: 0, lead: Infinity };
+  }
+
+  const scoreMargin = baseIntentScoreMargin(ctx);
+  const rival = region.bestRivalOther;
+  if (!rival) {
+    return { channel: 'warm', scoreMargin, lead: Infinity };
+  }
+
+  const lead = best.score - rival.score;
+  const warmNeed = Math.max(
+    scoreMargin * autoRotateWarmMarginMul,
+    autoRotateWarmLeadFloor
+  );
+  if (lead >= warmNeed) {
+    return { channel: 'warm', scoreMargin, lead, warmNeed };
+  }
+  return { channel: 'cold', scoreMargin, lead, warmNeed };
+}
+
+/** L1 后半：冷却 / 提交锁（按通道） */
+function passIntentTimingGates(ctx, region, channel) {
   const {
     item, profile, bulk, lastPiece, lastFill, now, trend
   } = ctx;
@@ -2400,18 +2459,21 @@ function passIntentTimingGates(ctx, region) {
     ? profile.cooldownMs * 1.35
     : profile.cooldownMs;
   if (lastPiece) cooldownMs *= 0.45;
-  const uniqueGrid = Boolean(region.uniqueOtherShapeKey);
-  const entryDampen = !uniqueGrid && isAssistEntryDampenActive(item, trend, now);
-  // 最高优先：格子上仅一种可放朝向 → 不吃入箱钝化冷却
-  if (uniqueGrid) {
+
+  const entryDampen = channel === 'cold' && isAssistEntryDampenActive(item, trend, now);
+  if (channel === 'hot') {
     cooldownMs *= 0.5;
+  } else if (channel === 'warm') {
+    cooldownMs *= 0.62;
   } else if (entryDampen) {
     cooldownMs *= 1.2;
   } else if (!region.currentSnap0Valid && region.bestCandidate) {
     cooldownMs *= 0.72;
   }
-  if (trend.dragDownFromTop && !entryDampen && !uniqueGrid) cooldownMs *= 0.85;
-  if (profile.tier === 'small' && !region.uniqueOtherShapeKey) {
+  if (trend.dragDownFromTop && channel === 'cold' && !entryDampen) {
+    cooldownMs *= 0.85;
+  }
+  if (profile.tier === 'small' && channel === 'cold') {
     cooldownMs = Math.max(cooldownMs, profile.cooldownMs);
   }
   if (now - (item.lastAutoRotationAt ?? 0) < cooldownMs) {
@@ -2419,13 +2481,9 @@ function passIntentTimingGates(ctx, region) {
   }
 
   const commitLeft = (item.assistCommitUntil ?? 0) - now;
-  const uniqueNeedsRotate = Boolean(
-    region.uniqueOtherShapeKey
-    || (lastFill?.needsRotateToFill && lastFill.preferredRotation != null
-      && lastFill.preferredRotation !== item.rotation)
-  );
   const strongOverride = Boolean(
-    uniqueNeedsRotate
+    channel === 'hot'
+    || channel === 'warm'
     || trend.edgeScrub
     || (lastPiece && lastFill?.needsRotateToFill)
   );
@@ -2437,95 +2495,120 @@ function passIntentTimingGates(ctx, region) {
 }
 
 /**
- * L3 决策：是否选定某个其它朝向进入确认。
- * @returns {{ ok: true, best } | { ok: false, clearIntent?: boolean }}
+ * L3 决策：通道 + 手势 + 分差
+ * @returns {{ ok: true, best, channel } | { ok: false, clearIntent?: boolean }}
  */
 function decideIntentRotation(ctx, region) {
   const {
-    item, profile, bulk, lastPiece, lastFill, trend, now
+    lastPiece, lastFill, trend, now
   } = ctx;
 
   const best = region.bestCandidate;
   if (!best || !best.valid) {
     return { ok: false, clearIntent: true };
   }
-  if (best.isCurrent || best.rotation === item.rotation) {
+  if (best.isCurrent || best.rotation === ctx.item.rotation) {
     return { ok: false, clearIntent: true };
   }
   if (best.distanceSq > region.maxDistanceSq) {
     return { ok: false, clearIntent: true };
   }
 
-  const uniqueGrid = Boolean(region.uniqueOtherShapeKey);
-  // 多朝向/不明确：冷静期内不帮转；唯一可放格子：不等
-  if (!uniqueGrid && isInAssistEntryGrace(item, now)) {
-    return { ok: false, clearIntent: true };
-  }
+  const classified = classifyIntentChannel(ctx, region);
+  const { channel, scoreMargin } = classified;
 
-  const entryDampen = !uniqueGrid && isAssistEntryDampenActive(item, trend, now);
-  const multiOrient = !uniqueGrid;
-  // 2A：多朝向须停稳 / 刷边 / 最后一块必转
+  // Cold + Warm：进箱冷静期不帮转（多可能第一次别太快）；Hot 唯一格子仍可快
   if (
-    multiOrient
-    && autoRotateMultiOrientNeedsSettled
-    && !trend.settled
-    && !trend.edgeScrub
-    && !(lastPiece && lastFill?.needsRotateToFill)
+    (channel === 'cold' || channel === 'warm')
+    && isInAssistEntryGrace(ctx.item, now)
   ) {
     return { ok: false, clearIntent: true };
   }
 
-  if (multiOrient) {
-    let scoreMargin = trend.settled || trend.edgeScrub
-      ? profile.hoverScoreMargin
-      : profile.scoreMargin;
-    if (bulk.isLarge) scoreMargin = Math.max(scoreMargin, 0.55);
-    if (lastPiece) scoreMargin *= 0.55;
-    if (profile.tier === 'small') scoreMargin = Math.max(scoreMargin, 0.42);
-    if (entryDampen) {
-      scoreMargin *= 1.35;
-    } else if (trend.dragDownFromTop) {
-      scoreMargin *= 0.85;
+  /**
+   * 手势 × 通道：
+   * hot：settled | slowSlide | scrub
+   * warm：第一次本拖更认停稳；之后可用 slowSlide
+   * cold：须停稳或刷边
+   */
+  if (channel === 'cold') {
+    if (
+      !trend.settled
+      && !trend.edgeScrub
+      && !(lastPiece && lastFill?.needsRotateToFill)
+    ) {
+      return { ok: false, clearIntent: true };
+    }
+  }
+  if (
+    channel === 'warm'
+    && !ctx.item.assistDidRotateThisDrag
+    && !trend.settled
+    && !trend.edgeScrub
+  ) {
+    // 多可能时第一次：须停稳，避免刚进箱慢滑就拧
+    return { ok: false, clearIntent: true };
+  }
+
+  if (channel !== 'hot') {
+    let margin = scoreMargin;
+    const entryDampen = (channel === 'cold' || channel === 'warm')
+      && isAssistEntryDampenActive(ctx.item, trend, now);
+    if (entryDampen && channel === 'cold') margin *= 1.35;
+    else if (entryDampen && channel === 'warm') margin *= 1.2;
+    else if (trend.dragDownFromTop && channel === 'cold') margin *= 0.85;
+    // Warm 第一次：分差再严一点
+    if (channel === 'warm' && !ctx.item.assistDidRotateThisDrag) {
+      margin *= 1.15;
     }
     if (
-      !entryDampen
+      channel === 'warm'
       && (!region.currentSnap0Valid || region.otherCloserThanCurrent || !region.currentFingerViable)
     ) {
-      scoreMargin *= 0.45;
+      margin *= 0.65;
+    } else if (
+      channel === 'cold'
+      && !(entryDampen && channel === 'cold')
+      && (!region.currentSnap0Valid || region.otherCloserThanCurrent || !region.currentFingerViable)
+    ) {
+      margin *= 0.45;
     }
+
     const rival = region.bestRivalOther;
-    if (rival && best.score - rival.score < scoreMargin) {
+    if (rival && best.score - rival.score < margin) {
       return { ok: false, clearIntent: true };
     }
     if (
       region.currentFingerViable
       && region.currentSnap0Valid
-      && best.score - (region.bestCurrent?.score ?? -Infinity) < scoreMargin + 0.2
+      && best.score - (region.bestCurrent?.score ?? -Infinity) < margin + (channel === 'warm' ? 0.18 : 0.2)
     ) {
       return { ok: false, clearIntent: true };
     }
   }
 
-  return { ok: true, best };
+  return { ok: true, best, channel };
 }
 
-/** L4：intentKey 稳定 + dwell + valid 提交 */
-function confirmAndApplyIntentRotation(ctx, region, best) {
+/** L4：intentKey 稳定 + dwell(通道) + valid 提交 */
+function confirmAndApplyIntentRotation(ctx, region, best, channel) {
   const {
     item, worldPosition, profile, bulk, lastPiece, lastFill, now, trend, edgeHint, current
   } = ctx;
 
   let hoverCellKey;
-  if (region.uniqueOtherShapeKey) {
-    hoverCellKey = `region-unique:${region.uniqueOtherShapeKey}`;
+  if (channel === 'hot' && region.uniqueOtherShapeKey) {
+    hoverCellKey = `hot:${region.uniqueOtherShapeKey}`;
+  } else if (channel === 'warm') {
+    hoverCellKey = `warm:${best.shapeKey}:${Math.floor(best.gx / 2)},${Math.floor(best.gy / 2)}`;
   } else if (lastPiece && lastFill?.needsRotateToFill) {
     hoverCellKey = `last:${best.shapeKey}`;
   } else if (trend.edgeScrub && edgeHint) {
-    hoverCellKey = `${best.shapeKey}:scrub:${edgeHint}`;
+    hoverCellKey = `cold:${best.shapeKey}:scrub:${edgeHint}`;
   } else if (bulk.isLarge) {
-    hoverCellKey = `${best.shapeKey}:L:${Math.floor(best.gx / 2)},${Math.floor(best.gy / 2)}`;
+    hoverCellKey = `cold:${best.shapeKey}:L:${Math.floor(best.gx / 2)},${Math.floor(best.gy / 2)}`;
   } else {
-    hoverCellKey = `${best.shapeKey}:${best.gx},${best.gy},${best.baseLevel}`;
+    hoverCellKey = `cold:${best.shapeKey}:${best.gx},${best.gy},${best.baseLevel}`;
   }
   if (item.autoRotateIntentKey !== hoverCellKey) {
     item.autoRotateIntentKey = hoverCellKey;
@@ -2544,15 +2627,15 @@ function confirmAndApplyIntentRotation(ctx, region, best) {
     if (lastFill?.needsRotateToFill || lastFill?.uniqueFillShapeKey) dwellScale *= 0.55;
   }
 
-  // 最高优先：格子上仅一种可放朝向 → 不吃入箱钝化，尽快确认
-  const uniqueGrid = Boolean(region.uniqueOtherShapeKey);
-  const entryDampen = !uniqueGrid && isAssistEntryDampenActive(item, trend, now);
-  const entryDragDown = trend.dragDownFromTop && !trend.settled && !entryDampen;
-  if (entryDampen) dwellScale *= 1.7;
+  const entryActive = isAssistEntryDampenActive(item, trend, now);
+  const entryDampenCold = channel === 'cold' && entryActive;
+  const entryDampenWarm = channel === 'warm' && entryActive;
+  const entryDragDown = trend.dragDownFromTop && !trend.settled && channel === 'cold' && !entryDampenCold;
+  if (entryDampenCold) dwellScale *= 1.7;
+  else if (entryDampenWarm) dwellScale *= 1.28;
   else if (entryDragDown) dwellScale *= 0.82;
-  if (trend.slowSlide && !entryDampen && !uniqueGrid) dwellScale *= 1.35;
 
-  if (uniqueGrid) {
+  if (channel === 'hot') {
     if (trend.settled || trend.edgeScrub) {
       dwellScale *= 0.42;
       if (!region.currentSnap0Valid) dwellScale *= 0.88;
@@ -2563,8 +2646,32 @@ function confirmAndApplyIntentRotation(ctx, region, best) {
     } else {
       dwellScale *= 0.7;
     }
-  } else if (profile.tier === 'small' && !lastPiece) {
-    dwellScale = Math.max(dwellScale, 0.95);
+  } else if (channel === 'warm') {
+    // 多可能：整体比上一版更稳
+    if (trend.settled || trend.edgeScrub) {
+      dwellScale *= 0.72;
+      dwellScale = Math.min(dwellScale, 0.85);
+    } else if (trend.slowSlide) {
+      dwellScale *= 0.95;
+      dwellScale = Math.min(dwellScale, 1.1);
+    } else {
+      dwellScale *= 1.0;
+    }
+  } else {
+    if (trend.slowSlide && !entryDampenCold) dwellScale *= 1.35;
+    if (profile.tier === 'small' && !lastPiece) {
+      dwellScale = Math.max(dwellScale, 0.95);
+    }
+  }
+
+  // 本拖第一次帮转再拉长（刚进箱 / 多可能最容易抢）
+  const firstAssist = !item.assistDidRotateThisDrag;
+  if (firstAssist) {
+    if (channel === 'warm') dwellScale *= assistFirstRotateDwellMulWarm;
+    else if (channel === 'cold') dwellScale *= assistFirstRotateDwellMulCold;
+    else if (channel === 'hot' && !item.assistFromPlacedPickup) {
+      dwellScale *= assistFirstRotateDwellMulHotFromTray;
+    }
   }
 
   const dwellNeed = profile.dwellMs * dwellScale;
@@ -2581,25 +2688,24 @@ function confirmAndApplyIntentRotation(ctx, region, best) {
   item.lastAutoRotationAt = now;
   item.assistCommitRotation = best.rotation;
   item.assistCommitUntil = now + assistCommitLockMs;
+  item.lastIntentChannel = channel;
+  item.assistDidRotateThisDrag = true;
   clearAutoRotateIntent(item);
   const confirmed = getCandidateForRotation(item, worldPosition, item.rotation);
   return confirmed.valid ? confirmed : best;
 }
 
-/** 意图候选入口：L0→L1→L2→L3→L4 */
+/** 意图候选入口：形状×格子×手势 → Hot / Warm / Cold */
 function getIntentCandidate(item, worldPosition) {
-  // L0 采样
   const ctx = sampleIntentContext(item, worldPosition);
   const { current, trend, edgeHint, profile, bulk, lastFill } = ctx;
 
-  // L1 准入
   const gate = passIntentContextGates(ctx);
   if (!gate.ok) {
     if (gate.clearIntent) clearAutoRotateIntent(item);
     return current;
   }
 
-  // L2 落点发现：Ghost 邻域 R 内可放朝向
   const region = analyzeRegionPlaceableOrients(
     item,
     worldPosition,
@@ -2610,22 +2716,26 @@ function getIntentCandidate(item, worldPosition) {
     lastFill
   );
 
-  // L1 时序门（冷却 / 提交锁）
-  const timing = passIntentTimingGates(ctx, region);
+  const { channel } = classifyIntentChannel(ctx, region);
+
+  const timing = passIntentTimingGates(ctx, region, channel);
   if (!timing.ok) {
     if (timing.clearIntent) clearAutoRotateIntent(item);
     return current;
   }
 
-  // L3 决策
   const decision = decideIntentRotation(ctx, region);
   if (!decision.ok) {
     if (decision.clearIntent) clearAutoRotateIntent(item);
     return current;
   }
 
-  // L4 确认提交
-  return confirmAndApplyIntentRotation(ctx, region, decision.best);
+  return confirmAndApplyIntentRotation(
+    ctx,
+    region,
+    decision.best,
+    decision.channel || channel
+  );
 }
 
 function clearAutoRotateIntent(item) {
@@ -3219,6 +3329,7 @@ function clearAssistRotateSession(item) {
   item.assistBoxUnlockedAt = 0;
   item.assistEnteredFromBottomAt = 0;
   item.assistFromPlacedPickup = false;
+  item.assistDidRotateThisDrag = false;
   item.lastAutoRotationAt = 0;
   item.assistCommitUntil = 0;
   item.assistCommitRotation = null;
