@@ -999,20 +999,22 @@ new THREE.EdgesGeometry(ghost.geometry)
 权威变更表：`docs/research/INTENT-IMPLEMENTATION-CHANGELOG.md`。  
 实现：`src/main.js`。
 
-### 主路径
+### 主路径（L0–L4）
 
 ```text
-门闩 → analyzeRegionPlaceableOrients(R) → 决策 → dwell → valid 提交
+L0 sampleIntentContext
+L1 passIntentContextGates + passIntentTimingGates
+L2 analyzeRegionPlaceableOrients(R)   // Ghost 邻域可放朝向
+L3 decideIntentRotation
+L4 confirmAndApplyIntentRotation      // dwell + valid 提交
 ```
 
-1. **门闩**：近箱、manualLock、绿不抢、瞄准态、大件停稳/刷边、冷却。  
-2. **区域 R**：`regionRadiusCells` + 形状跨度；合法落点须 `distanceSq ≤ maxDistanceSq`（距离硬截断）。  
-3. **可放朝向**：互异脚印（**含当前**）在 kick 内 `getPlacement.valid`。  
-4. **决策**：  
-   - 当前脚印在 R 也能放 → **不转**  
-   - 仅 1 种其它脚印可放 → `uniqueOtherShapeKey`，较快 dwell  
-   - ≥2 种 → 分差；当前也存活时更保守；不够自信 **宁可不转**  
-5. **提交**：`isPlacementStillValid` + `assistCommitLockMs`。
+入口：`getIntentCandidate` 只编排上述四层。
+
+1. **L1 准入**：Ghost 进箱解锁且当前 Ghost 在棋盘；manualLock；绿不抢；settled/slowSlide/edgeScrub；!lateralCarry；大件更钝；冷却/提交锁。  
+2. **L2 区域 R**：`regionRadiusCells` + 距离硬截断；互异脚印含当前。  
+3. **L3 决策**：唯一其它可放 / 多解须停稳(2A) / 分差 / 宁可不转。  
+4. **L4 提交**：intentKey + dwell + `isPlacementStillValid` + commitLock。
 
 ### 全局阈值
 
