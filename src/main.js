@@ -4084,14 +4084,19 @@ function getItemVisualHeight(item) {
 function placeItem(item, next, { recordUndo = true } = {}) {
   if (recordUndo) pushUndoSnapshot();
   clearHint();
+  // 逻辑角以放置候选为准（意图可能刚改 rotation，mesh 还在 lerp）
+  if (next.rotation != null) item.rotation = next.rotation;
   item.gridX = next.gx;
   item.gridY = next.gy;
   item.level = next.baseLevel;
   item.placed = true;
   trayQueue = trayQueue.filter((entry) => entry !== item);
   const boardScale = getBoardItemScale();
-  item.mesh.position.copy(gridToWorld(next.gx, next.gy, next.shape));
+  const shape = next.shape || rotateShape(item.shape, item.rotation);
+  item.mesh.position.copy(gridToWorld(next.gx, next.gy, shape));
   item.mesh.position.y = getBoardItemY(item, boardScale, next.baseLevel);
+  // 落定瞬间对齐旋转：避免「已放置但 mesh 还在转」的半成品感
+  setItemRotationImmediate(item, item.rotation);
   setItemScale(item, boardScale);
   setItemShadow(item, true);
   item.lastValid = { gx: next.gx, gy: next.gy, level: next.baseLevel, rotation: item.rotation };
