@@ -502,6 +502,9 @@ showGridGuide(level);
 gridGuideGroup.position.y = guideLevel * grid.levelHeight;
 ```
 
+普通放置/支撑不足时，`guideLevel` 对应当前尝试的落脚层。高物品放到底层时仍显示底层网格，不按 `itemHeight` 抬到物品中层或顶层。  
+超过箱子高度时，`guideLevel` 允许等于 `grid.levels`，表示箱子高度上限平面，而不是最高可放 base 层 `grid.levels - 1`。例如 `levels = 3` 时，超高提示显示在第三层顶部网格。
+
 高度辅助线：
 
 ```js
@@ -864,6 +867,7 @@ if (item === exceptItem || !item.placed) continue;
 
 - `baseLevel`：规则判定层，决定能不能放、最终落在哪一层。
 - `displayBaseLevel`：UI 展示层，决定红/绿 ghost 和网格显示在哪一层。
+- `guideLevel`：网格辅助层，通常与 `displayBaseLevel` 一致；超高时可显示到 `grid.levels`。
 - 合法时两者相同。
 - 非法时允许不同，避免错误提示被下层模型遮住。
 
@@ -894,11 +898,19 @@ if (item === exceptItem || !item.placed) continue;
 5. 夹紧到 `0..grid.levels - itemHeight` 后作为 `displayBaseLevel`。
 6. 如果 footprint 完全不在箱内，则退回 `placement.baseLevel ?? 0`。
 
+`height-exceeded` 超高规则：
+
+1. `getPlacement()` 通过 footprint 下方最大连续堆高 `maxStack` 判断：如果 `maxStack + itemHeight > grid.levels`，返回 `reason: 'height-exceeded'`。
+2. `displayBaseLevel` 显示在箱子高度上限平面 `grid.levels`，而不是底层或最高可放 base 层。
+3. `guideLevel` 同样设置为 `grid.levels`，使网格显示为最高高度边界。三层箱子就是第三层顶部网格。
+4. 该提示表达“超过箱子高度”，不表达“底层碰撞”。
+
 典型场景：
 
 - 部分格堆高 `1`、缺口格堆高 `0`（完整支撑失败）→ `displayBaseLevel = 1`，红框画在第 1 层表面。
 - 底层已被物品遮挡、玩家实际在上层尝试摆放 → 红框与网格显示在可见上层，不沉到箱底。
 - footprint 部分出界 → 只统计箱内可见格，尽量保持红框可见。
+- 三层箱中物品再叠会超过高度 → 红框和网格显示在第三层顶部高度边界，帮助玩家理解超高。
 - 全空非法（极少见）→ `baseLevel = 0`。
 - 堆已顶到箱顶附近 → 夹紧后不超过可放上限。
 
@@ -977,14 +989,16 @@ ghost.position.y = getBoardSurfaceY() + displayBaseLevel * grid.levelHeight + 0.
 
 - **合法**：`baseLevel` 为真实可放层。
 - **非法**：`displayBaseLevel` 为 UI 可见展示层，避免红框沉在第 0 层被遮挡。
+- **超高非法**：`reason === 'height-exceeded'` 时，`displayBaseLevel` 和 `guideLevel` 指向 `grid.levels`，即箱子高度上限平面。
 
 网格引导与 ghost 共用同一展示层：
 
 ```js
-showGridGuide(candidate?.displayBaseLevel ?? candidate?.baseLevel ?? 0);
+showGridGuide(candidate?.guideLevel ?? candidate?.displayBaseLevel ?? candidate?.baseLevel ?? 0);
 ```
 
 因此拖拽非法时，红框和网格会一起抬到玩家当前尝试放置的可见层。
+超高非法时，网格会抬到箱体顶层边界，用最高层网格解释“高度超出”。
 
 边框：
 
@@ -994,42 +1008,57 @@ new THREE.EdgesGeometry(ghost.geometry)
 
 边框透明度 `0.95`。
 
-## 19. 意图自动转角（v2）
+## 19. 意图自动转角（v2 · Hot/Warm/Cold）
 
 权威变更表：`docs/research/INTENT-IMPLEMENTATION-CHANGELOG.md`。  
-实现：`src/main.js`。
+灵敏度检索：`docs/research/SYNTHESIS-intent-sensitivity.md`。  
+实现：`src/main.js` · UI：`src/styles.css`。
 
-### 主路径（L0–L4）
+### 模型
+
+**形状 × 可放格子（红色 Ghost）× 手势（物品速度）→ 通道 → 确认帮转。**
+
+### 主路径
 
 ```text
 L0 sampleIntentContext
-L1 passIntentContextGates + passIntentTimingGates
-L2 analyzeRegionPlaceableOrients(R)   // Ghost 邻域可放朝向
+L1 passIntentContextGates
+L2 analyzeRegionPlaceableOrients + analyzeBoardOrientFill
+   classifyIntentChannel → hot | warm | cold
+L1b passIntentTimingGates(channel)
 L3 decideIntentRotation
-L4 confirmAndApplyIntentRotation      // dwell + valid 提交
+L4 confirmAndApplyIntentRotation
 ```
 
-入口：`getIntentCandidate` 只编排上述四层。
+| 通道 | 条件 | 手势 | 延迟 |
+|------|------|------|------|
+| hot | 邻域或**全盘**只剩一种其它可放脚印 | 停稳/慢滑 | 短 |
+| warm | 分差显著 | **须停稳** | 中长 |
+| cold | 多解/不明确 | 须停稳 | 长 + 进箱冷静/钝化 |
 
-1. **L1 准入**：Ghost 进箱解锁且当前 Ghost 在棋盘；manualLock；绿不抢；settled/slowSlide/edgeScrub；!lateralCarry；大件更钝；冷却/提交锁。  
-2. **L2 区域 R**：`regionRadiusCells` + 距离硬截断；互异脚印含当前。  
-3. **L3 决策**：唯一其它可放 / 多解须停稳(2A) / 分差 / 宁可不转。  
-4. **L4 提交**：intentKey + dwell + `isPlacementStillValid` + commitLock。
+### 速度（`speedTuning`，Speed 面板可改）
 
-### 全局阈值
+| 档 | 默认（格/秒） | 帮转 |
+|----|----------------|------|
+| settled | &lt; 0.38 | 可评估 |
+| slowSlide | ～ 0.82 | 可评估 |
+| normal | ～ 1.6 | 否 |
+| fast | ≥ 1.6 | 否 |
 
-| 常量 | 约值 | 作用 |
-|------|------|------|
-| `autoRotateHoverSpeedCells` | 0.75 | 悬停 |
-| `autoRotateAimSpeedCells` | 1.5 | 慢速瞄准上限 |
-| `autoRotateMotionDirMaxSpeedCells` | 1.15 | 方向消歧速度上限 |
-| `manualLockMs` / `assistCommitLockMs` | 800 / 900 | 手动锁 / 帮转提交锁 |
+- 速度 = **物品**近端移动速度 ÷ **一格边长**。  
+- 近端几乎不动 → **立刻 settled**（不被历史轨迹拖成 normal）。  
+- 顶部 HUD：拖拽时显示「慢速/快速」；侧栏 **Speed 快慢** 面板调阈值。  
+- `?intentDebug=1`：详细档/通道。
+
+### 进箱
+
+- Ghost 脚印盖住棋盘格才解锁；归位托盘清零。  
+- 冷静/上拖钝化仅 **warm/cold**；**hot 跳过**。
 
 ### 分档（`getAutoRotateAssistProfile`）
 
-- **small / medium / large**：灵敏度与 `regionRadiusCells`（约 1.15 / 1.25 / 1.05）。  
-- 大件 `getItemFootprintBulk`：须 hovering 或 edgeScrub；dwell×1.45；cooldown×1.35。  
-- 贴边 `edgeBonus` 仅刷边时轻用，**不再作主引擎**。
+- small / medium / large：`regionRadiusCells`、dwell 等。  
+- 大件更钝；贴边仅轻消歧。
 
 ### 轻消歧（非触发器）
 

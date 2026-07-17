@@ -47,10 +47,10 @@ const assistBoxEntryGraceMs = 580;
  */
 const assistEntryFromBottomDampenMs = 950;
 /** 本拖第一次帮转额外 dwell（仅 warm/cold；hot 格子唯一不拖） */
-const assistFirstRotateDwellMulWarm = 1.7;
-const assistFirstRotateDwellMulCold = 1.45;
+const assistFirstRotateDwellMulWarm = 1.4;
+const assistFirstRotateDwellMulCold = 1.28;
 /** 全局 dwell 略拉长（仅 warm/cold） */
-const assistGlobalDwellMul = 1.22;
+const assistGlobalDwellMul = 1.08;
 const autoRotateDistWeight = 3;
 const autoRotateFinalBonus = 0.45;
 const autoRotateStepPenalty = 0.4;
@@ -58,19 +58,24 @@ const autoRotateStepPenalty = 0.4;
 const autoRotateMotionDirBonus = 0.38;
 const autoRotateMotionConfidenceMin = 0.72;
 /**
- * 速度分档（格/秒）——ballistic 不转，fine 才评：
- *   settled   < 0.38
- *   slowSlide 0.38 ~ 0.82   （略放宽 fine，不开放 normal）
- *   normal    0.82 ~ 1.6
- *   fast      ≥ 1.6
+ * 速度分档（格/秒）——可调；面板 Speed 实时改 speedTuning。
+ *   settled   < settled
+ *   slowSlide settled ~ slowSlideMax
+ *   normal    slowSlideMax ~ normalMax
+ *   fast      ≥ normalMax
  */
-const autoRotateSettledSpeedCells = 0.38;
-const autoRotateSlowSlideMaxCells = 0.82;
-const autoRotateNormalMaxCells = 1.6;
-const autoRotateHoverSpeedCells = autoRotateSettledSpeedCells;
-const autoRotateAimSpeedCells = autoRotateSlowSlideMaxCells;
-const autoRotateMotionDirMaxSpeedCells = autoRotateSlowSlideMaxCells;
-const autoRotateSlowSlideAxisConfidence = 0.62;
+const defaultSpeedTuning = {
+  settled: 0.38,
+  slowSlideMax: 0.82,
+  normalMax: 1.6,
+  axisConfidence: 0.62
+};
+const speedTuning = { ...defaultSpeedTuning };
+// 兼容旧名（读当前调参）
+function getSettledSpeedCells() { return speedTuning.settled; }
+function getSlowSlideMaxCells() { return speedTuning.slowSlideMax; }
+function getNormalMaxCells() { return speedTuning.normalMax; }
+function getSlowSlideAxisConfidence() { return speedTuning.axisConfidence; }
 /**
  * 通道：hot=格子唯一可放；warm=分差显著；cold=多解/不明确。
  * Warm 领先：绝对分差 ≥ max(margin×mul, floor)
@@ -80,9 +85,90 @@ const autoRotateWarmLeadFloor = 0.48;
 /**
  * 近端轨迹位移（格）：用于 settled（几乎不动）与是否在滑。
  */
-const autoRotateRelocateTrailCells = 0.2;
+/** 近端位移超过此值视为「在挪」；略抬高以抗手指微抖（过低会导致永远无法 settled） */
+const autoRotateRelocateTrailCells = 0.32;
 const autoRotateTrailMs = 420;
 const autoRotateTrailMax = 18;
+
+/** URL 带 ?intentDebug=1 时显示速度档 / 通道，便于对照「我算快还是慢」 */
+const intentDebugEnabled = new URLSearchParams(window.location.search).has('intentDebug');
+let intentDebugEl = null;
+if (intentDebugEnabled) {
+  intentDebugEl = document.createElement('div');
+  intentDebugEl.id = 'intentDebug';
+  intentDebugEl.className = 'intent-debug';
+  intentDebugEl.textContent = 'intentDebug：拖动物品查看';
+  document.body.appendChild(intentDebugEl);
+}
+
+const DRAG_SPEED_BAND_UI = {
+  settled: {
+    title: '慢速 · 停稳',
+    detail: '物品几乎不动，系统视为对准',
+    tone: 'slow'
+  },
+  slowSlide: {
+    title: '慢速 · 微调',
+    detail: '很慢地挪，系统视为对准中',
+    tone: 'slow'
+  },
+  normal: {
+    title: '快速 · 正常挪',
+    detail: '在换位置，系统不帮转',
+    tone: 'fast'
+  },
+  fast: {
+    title: '快速 · 快甩',
+    detail: '甩动路过，系统不帮转',
+    tone: 'fast'
+  }
+};
+
+/** 顶部：当前拖拽是快速还是慢速操作 */
+function updateDragSpeedHud(item) {
+  if (!dragSpeedHudEl || !dragSpeedValueEl || !dragSpeedDetailEl) return;
+  if (!item) {
+    dragSpeedHudEl.hidden = true;
+    dragSpeedHudEl.dataset.tone = '';
+    return;
+  }
+  const trend = getDragTrend(item);
+  const band = trend.speedBand || 'settled';
+  const ui = DRAG_SPEED_BAND_UI[band] || DRAG_SPEED_BAND_UI.normal;
+  const v = (trend.speedCells || 0).toFixed(2);
+  dragSpeedHudEl.hidden = false;
+  dragSpeedHudEl.dataset.tone = ui.tone;
+  dragSpeedValueEl.textContent = ui.title;
+  dragSpeedDetailEl.textContent = `${ui.detail} · ${v} 格/秒`;
+}
+
+function updateIntentDebugHud(item, channel = null) {
+  updateDragSpeedHud(item);
+  if (!intentDebugEl) return;
+  if (!item) {
+    intentDebugEl.textContent = 'intentDebug：未拖拽';
+    return;
+  }
+  const trend = getDragTrend(item);
+  const v = (trend.speedCells || 0).toFixed(2);
+  const vr = (trend.speedCellsRecent || 0).toFixed(2);
+  const ch = channel || item.lastIntentChannel || '-';
+  const bandLabel = {
+    settled: '停稳',
+    slowSlide: '慢滑',
+    normal: '正常挪',
+    fast: '快甩'
+  }[trend.speedBand] || trend.speedBand;
+  const lines = [
+    `速度档: ${bandLabel} (${trend.speedBand})`,
+    `速度: ${v} 格/秒 (近端 ${vr})`,
+    `阈值: 停<${speedTuning.settled} | 慢<${speedTuning.slowSlideMax} | 常<${speedTuning.normalMax}`,
+    `对准帮转: ${trend.allowRotateAssist ? '是' : '否'}`,
+    `左右平移: ${trend.lateralCarry ? '是' : '否'}  还在挪: ${trend.relocating ? '是' : '否'}`,
+    `通道: ${ch}  进箱解锁: ${item.assistBoxUnlocked ? '是' : '否'}`
+  ];
+  intentDebugEl.textContent = lines.join('\n');
+}
 
 /**
  * 小关可略热心；中/大关收紧吸附、提高分差、加长确认，减少误转。
@@ -100,7 +186,7 @@ function getAutoRotateAssistProfile() {
   if (tier === 'large') {
     return {
       tier,
-      dwellMs: 400,
+      dwellMs: 340,
       cooldownMs: 520,
       maxSnapCells: 0.55,
       hoverMaxSnapCells: 0.7,
@@ -112,8 +198,8 @@ function getAutoRotateAssistProfile() {
       edgeBand: 0.24,
       edgeBonus: 0.35,
       requireAiming: true,
-      dwellHoverScale: 0.88,
-      dwellScrubScale: 0.72,
+      dwellHoverScale: 0.78,
+      dwellScrubScale: 0.68,
       useLongKicks: false,
       motionDirWeight: 0.45
     };
@@ -122,7 +208,7 @@ function getAutoRotateAssistProfile() {
   if (tier === 'medium') {
     return {
       tier,
-      dwellMs: 380,
+      dwellMs: 320,
       cooldownMs: 460,
       maxSnapCells: 0.65,
       hoverMaxSnapCells: 0.85,
@@ -133,17 +219,17 @@ function getAutoRotateAssistProfile() {
       edgeBand: 0.28,
       edgeBonus: 0.4,
       requireAiming: true,
-      dwellHoverScale: 0.85,
-      dwellScrubScale: 0.68,
+      dwellHoverScale: 0.75,
+      dwellScrubScale: 0.64,
       useLongKicks: true,
       motionDirWeight: 0.7
     };
   }
 
-  // small：偏稳
+  // small：慢速略跟手，仍须停稳/慢滑
   return {
     tier,
-    dwellMs: 390,
+    dwellMs: 330,
     cooldownMs: 450,
     maxSnapCells: 0.68,
     hoverMaxSnapCells: 0.82,
@@ -154,8 +240,8 @@ function getAutoRotateAssistProfile() {
     edgeBand: 0.2,
     edgeBonus: 0.28,
     requireAiming: true,
-    dwellHoverScale: 0.92,
-    dwellScrubScale: 0.8,
+    dwellHoverScale: 0.8,
+    dwellScrubScale: 0.72,
     useLongKicks: true,
     motionDirWeight: 0.4
   };
@@ -221,6 +307,11 @@ app.innerHTML = `
       <button id="resetBtn" aria-label="重置">重置</button>
     </div>
   </div>
+  <div id="dragSpeedHud" class="drag-speed-hud" hidden aria-live="polite">
+    <span class="drag-speed-hud__kicker">当前操作</span>
+    <strong id="dragSpeedValue">—</strong>
+    <span id="dragSpeedDetail" class="drag-speed-hud__detail"></span>
+  </div>
   <button id="rotateBtn" class="rotate-btn" aria-label="旋转">↻</button>
   <div id="toast" class="toast">订单完成</div>
   <div id="settlePanel" class="settle-panel" hidden>
@@ -279,9 +370,24 @@ tablePanel.innerHTML = `
 `;
 document.body.appendChild(tablePanel);
 
+const speedPanel = document.createElement('aside');
+speedPanel.className = 'camera-panel speed-panel';
+speedPanel.innerHTML = `
+  <div class="camera-panel__head">
+    <strong>Speed 快慢</strong>
+    <button id="speedResetBtn" type="button">重置</button>
+  </div>
+  <p class="speed-panel__hint">单位：物品移动 · 格/秒<br/>停稳 &lt; 慢滑上限 &lt; 正常上限 ≤ 快甩</p>
+  <div class="camera-grid" id="speedControls"></div>
+`;
+document.body.appendChild(speedPanel);
+
 const canvas = document.querySelector('#game');
 const orderTitleEl = document.querySelector('#orderTitle');
 const statusEl = document.querySelector('#status');
+const dragSpeedHudEl = document.querySelector('#dragSpeedHud');
+const dragSpeedValueEl = document.querySelector('#dragSpeedValue');
+const dragSpeedDetailEl = document.querySelector('#dragSpeedDetail');
 const toastEl = document.querySelector('#toast');
 const settlePanel = document.querySelector('#settlePanel');
 const settleTitleEl = document.querySelector('#settleTitle');
@@ -299,6 +405,8 @@ const lightControlsEl = document.querySelector('#lightControls');
 const lightResetBtn = document.querySelector('#lightResetBtn');
 const tableControlsEl = document.querySelector('#tableControls');
 const tableResetBtn = document.querySelector('#tableResetBtn');
+const speedControlsEl = document.querySelector('#speedControls');
+const speedResetBtn = document.querySelector('#speedResetBtn');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#f6efe4');
@@ -461,6 +569,7 @@ rebuildItems();
 initCameraPanel();
 initLightPanel();
 initTablePanel();
+initSpeedPanel();
 fitCameraToBox();
 updateOrderCard();
 resize();
@@ -823,7 +932,7 @@ function addLine(x1, z1, x2, z2, mat) {
 }
 
 function setGridGuideLevel(level = 0) {
-  const guideLevel = THREE.MathUtils.clamp(level, 0, grid.levels - 1);
+  const guideLevel = THREE.MathUtils.clamp(level, 0, grid.levels);
   gridGuideGroup.position.y = guideLevel * grid.levelHeight;
   updateGridHeightGuide(guideLevel);
 }
@@ -1556,6 +1665,7 @@ function beginDragItem(item, event) {
   }
   showGridGuide(0);
   updateGhost(null);
+  updateDragSpeedHud(activeItem);
 }
 
 function onPointerMove(event) {
@@ -1579,8 +1689,9 @@ function onPointerMove(event) {
   activeItem.mesh.position.z = dragStartPosition.z + (hitPoint.z - dragStartHit.z) * DRAG_MOVE_GAIN_Z;
   sampleDragTrail(activeItem, activeItem.mesh.position);
   candidate = getIntentCandidate(activeItem, activeItem.mesh.position);
+  updateIntentDebugHud(activeItem, activeItem.lastIntentChannel);
   updateActiveItemDragScale();
-  showGridGuide(candidate?.displayBaseLevel ?? candidate?.baseLevel ?? 0);
+  showGridGuide(candidate?.guideLevel ?? candidate?.displayBaseLevel ?? candidate?.baseLevel ?? 0);
   updateGhost(candidate);
 }
 
@@ -1607,6 +1718,7 @@ function onPointerUp(event) {
     candidate = null;
     hideGridGuide();
     updateGhost(null);
+    updateDragSpeedHud(null);
     return;
   }
   canvas.releasePointerCapture(event.pointerId);
@@ -1628,6 +1740,7 @@ function onPointerUp(event) {
   candidate = null;
   hideGridGuide();
   updateGhost(null);
+  updateDragSpeedHud(null);
   refreshStatus();
 }
 
@@ -1750,7 +1863,8 @@ function getCandidateForRotation(item, worldPosition, rotation) {
   const snap = getSnapGridForShape(worldPosition, shape);
   const placement = getPlacement(item, snap.gx, snap.gy, shape);
   const displayBaseLevel = getGhostDisplayBaseLevel(item, snap.gx, snap.gy, shape, placement);
-  return { gx: snap.gx, gy: snap.gy, shape, inside: snap.inside, rotation, ...placement, displayBaseLevel };
+  const guideLevel = getGhostGuideLevel(item, displayBaseLevel, placement);
+  return { gx: snap.gx, gy: snap.gy, shape, inside: snap.inside, rotation, ...placement, displayBaseLevel, guideLevel };
 }
 
 function getSnapGridForShape(worldPosition, shape, insidePad = 0.8) {
@@ -1867,8 +1981,13 @@ function sampleDragTrail(item, worldPosition) {
   const now = performance.now();
   const trail = item.dragTrail || (item.dragTrail = []);
   const last = trail[trail.length - 1];
-  // 过密采样只更新末点，减轻抖动
-  if (last && now - last.t < 24) {
+  /**
+   * 采样策略（重要）：
+   * 旧逻辑在 now-last.t < 24 时写 last.t=now，pointermove 通常 8–16ms 一帧，
+   * 导致计时永远到不了 24ms、轨迹锁死成 1 个点 → 速度恒 0 → HUD 一直「慢速·停稳」。
+   * 正确做法：历史点不可被「刷新 t」吞掉；仅合并同帧/极近重复事件。
+   */
+  if (last && now - last.t < 2) {
     last.x = worldPosition.x;
     last.z = worldPosition.z;
     last.t = now;
@@ -2060,13 +2179,13 @@ function getRecentTrailMoveCells(item) {
 }
 
 /**
- * 近端速度（格/秒）：只看最近 ~180ms，避免「整段 420ms 均速偏低」把正常滑算成慢滑。
+ * 近端速度（格/秒）：只看最近 ~120ms，反映「此刻」物品多快。
  */
 function getRecentTrailSpeedCells(item) {
   const trail = item.dragTrail;
   if (!trail || trail.length < 2) return 0;
   const latestT = trail[trail.length - 1].t;
-  const windowMs = 180;
+  const windowMs = 120;
   let i0 = trail.length - 1;
   while (i0 > 0 && latestT - trail[i0 - 1].t < windowMs) i0 -= 1;
   if (i0 >= trail.length - 1) i0 = Math.max(0, trail.length - 2);
@@ -2081,19 +2200,40 @@ function getRecentTrailSpeedCells(item) {
  * 速度档：settled | slowSlide | normal | fast
  */
 function classifyDragSpeedBand(speedCells) {
-  if (speedCells < autoRotateSettledSpeedCells) return 'settled';
-  if (speedCells < autoRotateSlowSlideMaxCells) return 'slowSlide';
-  if (speedCells < autoRotateNormalMaxCells) return 'normal';
+  if (speedCells < speedTuning.settled) return 'settled';
+  if (speedCells < speedTuning.slowSlideMax) return 'slowSlide';
+  if (speedCells < speedTuning.normalMax) return 'normal';
   return 'fast';
 }
 
 /**
- * 分档取「整段」与「近端」中更猛的一档，避免拖慢再加速仍被当成慢滑。
+ * 分档取更猛的一档（仅用于「仍在移动」时防漏判加速）。
  * settled < slowSlide < normal < fast
  */
 function stricterSpeedBand(a, b) {
   const rank = { settled: 0, slowSlide: 1, normal: 2, fast: 3 };
   return (rank[a] || 0) >= (rank[b] || 0) ? a : b;
+}
+
+/**
+ * 当前操作速度档：以近端为准。
+ * 停下后近端不动 → 立刻停稳，不被 420ms 历史轨迹拖成「正常挪」。
+ */
+function resolveCurrentSpeedBand(speedCellsWhole, speedCellsRecent, relocating) {
+  const bandRecent = classifyDragSpeedBand(speedCellsRecent);
+  if (!relocating) {
+    // 近端几乎不动 = 当前已停
+    return {
+      speedBand: 'settled',
+      speedCells: Math.min(speedCellsRecent, speedTuning.settled * 0.5)
+    };
+  }
+  const bandWhole = classifyDragSpeedBand(speedCellsWhole);
+  // 仍在动：近端为主；若整段更猛则抬档（防加速瞬间被均速抹平）
+  return {
+    speedBand: stricterSpeedBand(bandRecent, bandWhole),
+    speedCells: Math.max(speedCellsRecent, speedCellsWhole * 0.5)
+  };
 }
 
 /**
@@ -2137,14 +2277,12 @@ function getDragTrend(item, edgeBand = 0.28) {
   const dist = Math.hypot(dx, dz);
   const speedCellsWhole = (dist / Math.max(grid.cell, 1e-6)) / (dt / 1000);
   const speedCellsRecent = getRecentTrailSpeedCells(item);
-  // 分档用「更猛」的一端：近端已经常速/快滑时，绝不因整段均速低而进慢滑
-  const speedBand = stricterSpeedBand(
-    classifyDragSpeedBand(speedCellsWhole),
-    classifyDragSpeedBand(speedCellsRecent)
-  );
-  const speedCells = Math.max(speedCellsWhole, speedCellsRecent);
   const recentMove = getRecentTrailMoveCells(item);
   const relocating = recentMove > autoRotateRelocateTrailCells;
+  // 当前操作：近端优先；停住后立即显示慢速/停稳
+  const resolved = resolveCurrentSpeedBand(speedCellsWhole, speedCellsRecent, relocating);
+  const speedBand = resolved.speedBand;
+  const speedCells = resolved.speedCells;
 
   const scrub = detectEdgeScrub(item, edgeBand);
   const motion = getStableMotionHint(item);
@@ -2154,19 +2292,25 @@ function getDragTrend(item, edgeBand = 0.28) {
     ? false
     : scrub.scrubbing;
 
-  // 停稳：速度在 settled 档，且近端几乎不动
-  const settled = speedBand === 'settled' && !relocating;
+  /**
+   * 停稳：近端速度在 settled 档即可。
+   * 不再要求 !relocating——轨迹采样修成多点后，手指微抖会让 path 长度
+   * 虚高，若再 && !relocating，唯一角 Hot 会永远进不了帮转。
+   */
+  const settled = speedBand === 'settled';
   // 慢滑：速度窗 + 主轴稳 + 在动 + 非上拖路过底边
-  const axisOk = (motion.confidence || 0) >= autoRotateSlowSlideAxisConfidence
-    || (motion.stableAxis && (motion.confidence || 0) >= autoRotateSlowSlideAxisConfidence * 0.9);
+  const axisConf = getSlowSlideAxisConfidence();
+  const axisOk = (motion.confidence || 0) >= axisConf
+    || (motion.stableAxis && (motion.confidence || 0) >= axisConf * 0.9);
   const passBottomUp = entry.dragUpIntoBox && entry.nearBottomEntry;
   /**
    * 左右平移就位（如拖到最右侧竖放）：这是挪位不是改朝向。
    * 主移轴为 x 且置信够 → 不进慢滑帮转，避免「往右滑被拧成横条」。
+   * 注意：Hot（唯一角）在门控里会跳过 lateralCarry 硬禁。
    */
   const lateralCarry = Boolean(
     motion.stableAxis === 'x'
-    && (motion.confidence || 0) >= autoRotateSlowSlideAxisConfidence
+    && (motion.confidence || 0) >= getSlowSlideAxisConfidence()
     && relocating
   );
   const slowSlide = speedBand === 'slowSlide'
@@ -2182,7 +2326,7 @@ function getDragTrend(item, edgeBand = 0.28) {
     axis = Math.abs(dx) >= Math.abs(dz) ? 'x' : 'z';
   }
 
-  // 帮转：停稳 / 慢滑 / 刷边；常速、快滑、左右平移就位不进
+  // 帮转：停稳 / 慢滑 / 刷边；常速、快滑默认不进（Hot 另有放宽）
   const allowRotateAssist = edgeScrub || settled || slowSlide;
   const allowAssist = allowRotateAssist || speedBand === 'normal';
 
@@ -2460,17 +2604,13 @@ function sampleIntentContext(item, worldPosition) {
 }
 
 /**
- * L1 准入：该不该评估帮转。
- * @returns {{ ok: true } | { ok: false, clearIntent?: boolean, soft?: boolean }}
- * soft=true：仅跳过本帧（如冷却中），不清 intentKey 进度
+ * L1 硬门：进箱 / 手动锁 / 绿不抢（与通道无关，必须先过）
  */
-function passIntentContextGates(ctx) {
+function passIntentHardGates(ctx) {
   const {
-    item, worldPosition, profile, bulk, lastPiece, lastFill, current, now, trend
+    item, worldPosition, lastPiece, lastFill, current, now, trend
   } = ctx;
 
-  // Ghost 进箱解锁 + 当前 Ghost 在棋盘
-  // 注：进箱冷静期放在 L2 之后——唯一可放格子时不必等
   if (!canAssistRotateInBox(item, worldPosition, now, trend)) {
     return { ok: false, clearIntent: true };
   }
@@ -2487,11 +2627,73 @@ function passIntentContextGates(ctx) {
     return { ok: false, clearIntent: true };
   }
 
-  // 手势：仅 settled | slowSlide | edgeScrub
+  return { ok: true };
+}
+
+/**
+ * 最后一块是否「必须转才能填」——手势/时延单独加速。
+ */
+function isLastPieceMustRotate(ctx) {
+  const { lastPiece, lastFill } = ctx;
+  return Boolean(
+    lastPiece
+    && lastFill
+    && (lastFill.needsRotateToFill || lastFill.uniqueFillShapeKey)
+  );
+}
+
+/**
+ * L1 手势门：按通道分流。
+ * hot（唯一角）：停稳/慢滑/刷边即可；禁止仅 fast；不因 lateralCarry 硬禁。
+ * 最后一块必须转：除 fast 外尽量放行（正常挪也可）。
+ * warm/cold：须瞄准态；大件更钝。
+ */
+function passIntentGestureGates(ctx, channel = 'cold') {
+  const {
+    profile, bulk, lastPiece, trend
+  } = ctx;
+
+  // 最后一块必须转：跟手优先，只拦快甩
+  if (isLastPieceMustRotate(ctx)) {
+    if (trend.speedBand === 'fast') {
+      return { ok: false, clearIntent: true };
+    }
+    return { ok: true };
+  }
+
+  if (channel === 'hot') {
+    // 唯一可放：跟手；快甩路过仍不转
+    if (trend.speedBand === 'fast') {
+      return { ok: false, clearIntent: true };
+    }
+    // 正常挪：仍要求瞄准态（停稳/慢滑/刷边），避免扫过唯一缝误转
+    if (trend.speedBand === 'normal' && !trend.allowRotateAssist && !trend.settled) {
+      return { ok: false, clearIntent: true };
+    }
+    // settled / slowSlide / scrub / 低速：放行
+    if (
+      trend.allowRotateAssist
+      || trend.settled
+      || trend.speedBand === 'settled'
+      || trend.speedBand === 'slowSlide'
+      || trend.edgeScrub
+    ) {
+      return { ok: true };
+    }
+    return { ok: false, clearIntent: true };
+  }
+
+  // warm / cold
   if (profile.requireAiming && !trend.allowRotateAssist) {
     return { ok: false, clearIntent: true };
   }
-  if (trend.lateralCarry && !trend.edgeScrub && !trend.settled) {
+  // warm 允慢滑；cold 平移中不帮（已停稳除外）
+  if (
+    channel === 'cold'
+    && trend.lateralCarry
+    && !trend.edgeScrub
+    && !trend.settled
+  ) {
     return { ok: false, clearIntent: true };
   }
   if (
@@ -2503,7 +2705,6 @@ function passIntentContextGates(ctx) {
     return { ok: false, clearIntent: true };
   }
 
-  // 大件更钝
   if (bulk.isLarge && !lastPiece && !trend.settled && !trend.edgeScrub) {
     return { ok: false, clearIntent: true };
   }
@@ -2512,6 +2713,15 @@ function passIntentContextGates(ctx) {
   }
 
   return { ok: true };
+}
+
+/**
+ * @deprecated 兼容：硬门 + cold 手势
+ */
+function passIntentContextGates(ctx) {
+  const hard = passIntentHardGates(ctx);
+  if (!hard.ok) return hard;
+  return passIntentGestureGates(ctx, 'cold');
 }
 
 /**
@@ -2655,14 +2865,46 @@ function classifyIntentChannel(ctx, region) {
     }
   }
 
-  if (
-    lastPiece
-    && lastFill?.needsRotateToFill
-    && lastFill.preferredRotation != null
-    && best
-    && best.rotation === lastFill.preferredRotation
-  ) {
-    return { channel: 'hot', scoreMargin: 0, lead: Infinity, hotReason: 'last' };
+  // 最后一块必须转 / 全盘唯一脚印：直接 Hot，尽快帮转
+  if (lastPiece && lastFill) {
+    if (lastFill.needsRotateToFill && lastFill.preferredRotation != null) {
+      let lastBest = best && best.rotation === lastFill.preferredRotation
+        ? best
+        : null;
+      if (!lastBest && region.matches?.length) {
+        lastBest = region.matches.find(
+          (m) => m.rotation === lastFill.preferredRotation && m.valid
+        ) || null;
+      }
+      if (!lastBest && best && !best.isCurrent) {
+        lastBest = best;
+      }
+      if (lastBest) {
+        return {
+          channel: 'hot',
+          scoreMargin: 0,
+          lead: Infinity,
+          hotReason: 'last',
+          hotBest: lastBest
+        };
+      }
+      // 尚无邻域候选也标 Hot，后续用 preferred 由区域扩大扫描补
+      return { channel: 'hot', scoreMargin: 0, lead: Infinity, hotReason: 'last' };
+    }
+    if (
+      lastFill.uniqueFillShapeKey
+      && best
+      && !best.isCurrent
+      && best.shapeKey === lastFill.uniqueFillShapeKey
+    ) {
+      return {
+        channel: 'hot',
+        scoreMargin: 0,
+        lead: Infinity,
+        hotReason: 'last',
+        hotBest: best
+      };
+    }
   }
 
   if (!best) return { channel: 'cold', scoreMargin, lead: 0 };
@@ -2692,11 +2934,16 @@ function passIntentTimingGates(ctx, region, channel) {
   let cooldownMs = bulk.isLarge && !lastPiece
     ? profile.cooldownMs * 1.35
     : profile.cooldownMs;
-  if (lastPiece) cooldownMs *= 0.45;
+  // 最后一块：冷却压短，必须转时更短
+  if (lastPiece) {
+    cooldownMs *= isLastPieceMustRotate(ctx) ? 0.18 : 0.32;
+  }
 
-  const entryDampen = channel === 'cold' && isAssistEntryDampenActive(item, trend, now);
+  const entryDampen = channel === 'cold'
+    && !isLastPieceMustRotate(ctx)
+    && isAssistEntryDampenActive(item, trend, now);
   if (channel === 'hot') {
-    cooldownMs *= 0.5;
+    cooldownMs *= isLastPieceMustRotate(ctx) ? 0.35 : 0.5;
   } else if (channel === 'warm') {
     cooldownMs *= 0.62;
   } else if (entryDampen) {
@@ -2707,7 +2954,7 @@ function passIntentTimingGates(ctx, region, channel) {
   if (trend.dragDownFromTop && channel === 'cold' && !entryDampen) {
     cooldownMs *= 0.85;
   }
-  if (profile.tier === 'small' && channel === 'cold') {
+  if (profile.tier === 'small' && channel === 'cold' && !lastPiece) {
     cooldownMs = Math.max(cooldownMs, profile.cooldownMs);
   }
   if (now - (item.lastAutoRotationAt ?? 0) < cooldownMs) {
@@ -2719,7 +2966,7 @@ function passIntentTimingGates(ctx, region, channel) {
     channel === 'hot'
     || channel === 'warm'
     || trend.edgeScrub
-    || (lastPiece && lastFill?.needsRotateToFill)
+    || isLastPieceMustRotate(ctx)
   );
   if (commitLeft > 0 && !strongOverride) {
     return { ok: false, clearIntent: true };
@@ -2747,25 +2994,28 @@ function decideIntentRotation(ctx, region) {
   if (best.isCurrent || best.rotation === ctx.item.rotation) {
     return { ok: false, clearIntent: true };
   }
-  // Hot 全盘唯一：放宽够近（剩余竖槽可能不在手指正下）
-  const maxDist = channel === 'hot' && classified.hotReason === 'board'
+  // Hot 全盘唯一 / 最后一块：放宽够近（洞可能不在手指正下）
+  const farHot = channel === 'hot'
+    && (classified.hotReason === 'board' || classified.hotReason === 'last');
+  const maxDist = farHot
     ? region.maxDistanceSq * 4
     : region.maxDistanceSq;
-  if (best.distanceSq > maxDist && classified.hotReason !== 'board') {
+  if (best.distanceSq > maxDist && !farHot) {
     return { ok: false, clearIntent: true };
   }
   if (
-    classified.hotReason === 'board'
+    farHot
     && best.distanceSq > (grid.cell * 8) ** 2
   ) {
-    // 仍要求别太远，但允许对准侧槽
+    // 仍要求别太远，但允许对准侧槽 / 剩余洞
     return { ok: false, clearIntent: true };
   }
 
-  // Cold + Warm：进箱冷静期；Hot（格子唯一）立刻可进确认
+  // Cold + Warm：进箱冷静期；Hot / 最后一块必须转：立刻可进确认
   if (
     (channel === 'cold' || channel === 'warm')
     && isInAssistEntryGrace(ctx.item, now)
+    && !isLastPieceMustRotate(ctx)
   ) {
     return { ok: false, clearIntent: true };
   }
@@ -2773,13 +3023,24 @@ function decideIntentRotation(ctx, region) {
   /**
    * 手势 × 通道：
    * hot：settled | slowSlide | scrub（尽快）
-   * warm / cold：须停稳或刷边
+   * warm：停稳 / 慢滑 / 刷边
+   * cold：须停稳或刷边
+   * 最后一块必须转：L1 已放宽，此处不再二次卡死
    */
-  if (channel === 'cold' || channel === 'warm') {
+  if (isLastPieceMustRotate(ctx)) {
+    // 仅拦 fast（与 L1 一致）；其余交给 dwell 确认
+  } else if (channel === 'warm') {
+    if (
+      !trend.settled
+      && !trend.slowSlide
+      && !trend.edgeScrub
+    ) {
+      return { ok: false, clearIntent: true };
+    }
+  } else if (channel === 'cold') {
     if (
       !trend.settled
       && !trend.edgeScrub
-      && !(lastPiece && lastFill?.needsRotateToFill)
     ) {
       return { ok: false, clearIntent: true };
     }
@@ -2854,59 +3115,73 @@ function confirmAndApplyIntentRotation(ctx, region, best, channel) {
   let dwellScale = 1;
   if (trend.edgeScrub) dwellScale = profile.dwellScrubScale;
   else if (trend.settled) dwellScale = profile.dwellHoverScale;
-  else if (trend.slowSlide) dwellScale = Math.min(1.15, profile.dwellHoverScale + 0.28);
+  // 慢滑比停稳稍钝一点，但仍跟手（旧 +0.28 偏拖）
+  else if (trend.slowSlide) dwellScale = Math.min(1.05, profile.dwellHoverScale + 0.14);
   else dwellScale = Math.min(1, profile.dwellHoverScale + 0.2);
   if (bulk.isLarge && !lastPiece) dwellScale *= 1.45;
+
+  const lastMust = isLastPieceMustRotate(ctx);
   if (lastPiece) {
-    dwellScale *= 0.42;
-    if (lastFill?.needsRotateToFill || lastFill?.uniqueFillShapeKey) dwellScale *= 0.55;
+    // 最后一块：明显缩短确认时间
+    dwellScale *= lastMust ? 0.22 : 0.32;
+    if (lastMust) dwellScale = Math.min(dwellScale, 0.28);
   }
 
   const entryActive = isAssistEntryDampenActive(item, trend, now);
-  const entryDampenCold = channel === 'cold' && entryActive;
-  const entryDampenWarm = channel === 'warm' && entryActive;
+  // 最后一块必须转：不吃入箱钝化
+  const entryDampenCold = channel === 'cold' && entryActive && !lastMust;
+  const entryDampenWarm = channel === 'warm' && entryActive && !lastMust;
   const entryDragDown = trend.dragDownFromTop && !trend.settled && channel === 'cold' && !entryDampenCold;
   if (entryDampenCold) dwellScale *= 1.7;
   else if (entryDampenWarm) dwellScale *= 1.28;
   else if (entryDragDown) dwellScale *= 0.82;
 
   if (channel === 'hot') {
-    // 格子唯一（含全盘只剩竖/横）：尽快，不吃全局拉长
-    if (trend.settled || trend.edgeScrub) {
-      dwellScale *= 0.32;
-      dwellScale = Math.min(dwellScale, 0.38);
+    // 格子唯一（含全盘只剩竖/横 / 最后一块必须转）：尽快
+    if (lastMust) {
+      dwellScale *= 0.2;
+      dwellScale = Math.min(dwellScale, 0.22);
+    } else if (trend.settled || trend.edgeScrub) {
+      dwellScale *= 0.28;
+      dwellScale = Math.min(dwellScale, 0.34);
     } else if (trend.slowSlide) {
-      dwellScale *= 0.45;
-      dwellScale = Math.min(dwellScale, 0.55);
+      dwellScale *= 0.38;
+      dwellScale = Math.min(dwellScale, 0.48);
     } else {
-      dwellScale *= 0.5;
+      dwellScale *= 0.45;
     }
   } else if (channel === 'warm') {
     if (trend.settled || trend.edgeScrub) {
-      dwellScale *= 0.88;
-      dwellScale = Math.min(dwellScale, 1.05);
+      dwellScale *= 0.72;
+      dwellScale = Math.min(dwellScale, 0.88);
     } else if (trend.slowSlide) {
-      dwellScale *= 1.12;
-      dwellScale = Math.min(dwellScale, 1.28);
+      dwellScale *= 0.92;
+      dwellScale = Math.min(dwellScale, 1.08);
     } else {
-      dwellScale *= 1.15;
+      dwellScale *= 1.1;
     }
   } else {
-    if (trend.slowSlide && !entryDampenCold) dwellScale *= 1.45;
+    if (trend.slowSlide && !entryDampenCold) dwellScale *= 1.35;
     if (profile.tier === 'small' && !lastPiece) {
       dwellScale = Math.max(dwellScale, 1.05);
     }
   }
 
-  // 第一次帮转加长：仅 warm/cold（多可能）
+  // 第一次帮转加长：仅 warm/cold；最后一块不拖
   const firstAssist = !item.assistDidRotateThisDrag;
-  if (firstAssist) {
+  if (firstAssist && !lastPiece) {
     if (channel === 'warm') dwellScale *= assistFirstRotateDwellMulWarm;
     else if (channel === 'cold') dwellScale *= assistFirstRotateDwellMulCold;
   }
 
-  const globalMul = channel === 'hot' ? 1 : assistGlobalDwellMul;
-  const dwellNeed = profile.dwellMs * globalMul * dwellScale;
+  const globalMul = (channel === 'hot' || lastMust) ? 1 : assistGlobalDwellMul;
+  let dwellNeed = profile.dwellMs * globalMul * dwellScale;
+  // 硬顶：最后一块必须转约 1～2 帧级确认，普通最后一块也压短
+  if (lastMust) {
+    dwellNeed = Math.min(dwellNeed, trend.settled || trend.edgeScrub ? 55 : 85);
+  } else if (lastPiece) {
+    dwellNeed = Math.min(dwellNeed, 120);
+  }
   if (now - (item.autoRotateIntentSince ?? 0) < dwellNeed) {
     return current;
   }
@@ -2932,12 +3207,14 @@ function getIntentCandidate(item, worldPosition) {
   const ctx = sampleIntentContext(item, worldPosition);
   const { current, trend, edgeHint, profile, bulk, lastFill } = ctx;
 
-  const gate = passIntentContextGates(ctx);
-  if (!gate.ok) {
-    if (gate.clearIntent) clearAutoRotateIntent(item);
+  // 1) 硬门：进箱 / 绿 / 手动锁（须先过才能扫格子）
+  const hard = passIntentHardGates(ctx);
+  if (!hard.ok) {
+    if (hard.clearIntent) clearAutoRotateIntent(item);
     return current;
   }
 
+  // 2) 先分析区域 → 通道（唯一角 Hot 依赖此结果，不能被手势门提前挡死）
   const region = analyzeRegionPlaceableOrients(
     item,
     worldPosition,
@@ -2948,7 +3225,16 @@ function getIntentCandidate(item, worldPosition) {
     lastFill
   );
 
-  const { channel } = classifyIntentChannel(ctx, region);
+  const classified = classifyIntentChannel(ctx, region);
+  const channel = classified.channel;
+  item.lastIntentChannel = channel;
+
+  // 3) 按通道分手势：Hot 跟手，Warm/Cold 更稳
+  const gesture = passIntentGestureGates(ctx, channel);
+  if (!gesture.ok) {
+    if (gesture.clearIntent) clearAutoRotateIntent(item);
+    return current;
+  }
 
   const timing = passIntentTimingGates(ctx, region, channel);
   if (!timing.ok) {
@@ -3406,7 +3692,7 @@ function getPlacement(item, gx, gy, shape) {
       const cx = gx + x;
       const cy = gy + y;
       if (cx < 0 || cy < 0 || cx >= grid.cols || cy >= grid.rows) {
-        return { valid: false, baseLevel: 0 };
+        return { valid: false, baseLevel: 0, reason: 'out-of-bounds' };
       }
 
     }
@@ -3418,10 +3704,18 @@ function getPlacement(item, gx, gy, shape) {
     return { valid: true, baseLevel };
   }
 
+  const stackIntent = getFootprintStackIntent(voxelGrid, gx, gy, shape);
+  const maxBaseLevel = Math.max(0, grid.levels - itemHeight);
+  const intendedBaseLevel = Math.min(stackIntent.maxStack, maxBaseLevel);
+  const reason = stackIntent.maxStack + itemHeight > grid.levels
+    ? 'height-exceeded'
+    : 'blocked';
+
   // 非法时用「意图落脚层」画 ghost/网格，避免红框沉在第 0 层被已放物品遮住
   return {
     valid: false,
-    baseLevel: getIntendedBaseLevel(voxelGrid, gx, gy, shape, itemHeight)
+    baseLevel: intendedBaseLevel,
+    reason
   };
 }
 
@@ -3486,31 +3780,7 @@ function getColumnStackHeight(voxelGrid, cx, cy) {
   return height;
 }
 
-/**
- * 非法放置时的展示层（方案 A）：
- * footprint 下各格堆高取 max —— 玩家通常对准最高支撑面去叠；
- * 再夹紧到物品仍能放进箱高的最大 baseLevel。
- * 例：部分格 stack=1、缺口 stack=0 时，红框画在第 1 层表面，而不是箱底。
- */
-function getIntendedBaseLevel(voxelGrid, gx, gy, shape, itemHeight) {
-  let maxStack = 0;
-  for (let y = 0; y < shape.length; y += 1) {
-    for (let x = 0; x < shape[y].length; x += 1) {
-      if (!shape[y][x]) continue;
-      maxStack = Math.max(maxStack, getColumnStackHeight(voxelGrid, gx + x, gy + y));
-    }
-  }
-
-  const maxBaseLevel = Math.max(0, grid.levels - itemHeight);
-  return Math.min(maxStack, maxBaseLevel);
-}
-
-function getGhostDisplayBaseLevel(item, gx, gy, shape, placement) {
-  if (placement.valid) return placement.baseLevel;
-
-  const voxelGrid = buildVoxelGrid(item);
-  const itemHeight = getItemHeight(item);
-  const maxBaseLevel = Math.max(0, grid.levels - itemHeight);
+function getFootprintStackIntent(voxelGrid, gx, gy, shape) {
   let maxStack = 0;
   let hasVisibleFootprint = false;
 
@@ -3525,8 +3795,37 @@ function getGhostDisplayBaseLevel(item, gx, gy, shape, placement) {
     }
   }
 
+  return { maxStack, hasVisibleFootprint };
+}
+
+/**
+ * 非法放置时的展示层（方案 A）：
+ * footprint 下各格堆高取 max —— 玩家通常对准最高支撑面去叠；
+ * 再夹紧到物品仍能放进箱高的最大 baseLevel。
+ * 例：部分格 stack=1、缺口 stack=0 时，红框画在第 1 层表面，而不是箱底。
+ */
+function getIntendedBaseLevel(voxelGrid, gx, gy, shape, itemHeight) {
+  const { maxStack } = getFootprintStackIntent(voxelGrid, gx, gy, shape);
+  const maxBaseLevel = Math.max(0, grid.levels - itemHeight);
+  return Math.min(maxStack, maxBaseLevel);
+}
+
+function getGhostDisplayBaseLevel(item, gx, gy, shape, placement) {
+  if (placement.valid) return placement.baseLevel;
+  if (placement.reason === 'height-exceeded') return grid.levels;
+
+  const voxelGrid = buildVoxelGrid(item);
+  const itemHeight = getItemHeight(item);
+  const maxBaseLevel = Math.max(0, grid.levels - itemHeight);
+  const { maxStack, hasVisibleFootprint } = getFootprintStackIntent(voxelGrid, gx, gy, shape);
+
   if (!hasVisibleFootprint) return placement.baseLevel ?? 0;
   return THREE.MathUtils.clamp(maxStack, 0, maxBaseLevel);
+}
+
+function getGhostGuideLevel(item, displayBaseLevel, placement) {
+  if (placement.reason === 'height-exceeded') return grid.levels;
+  return THREE.MathUtils.clamp(displayBaseLevel, 0, Math.max(0, grid.levels - 1));
 }
 
 function getItemHeight(item) {
@@ -3911,7 +4210,7 @@ function rotateItemByTap(item) {
 
   if (item === activeItem) {
     candidate = getCandidate(item, item.mesh.position);
-    showGridGuide(candidate?.displayBaseLevel ?? candidate?.baseLevel ?? 0);
+    showGridGuide(candidate?.guideLevel ?? candidate?.displayBaseLevel ?? candidate?.baseLevel ?? 0);
     updateGhost(candidate);
     return;
   }
@@ -4273,6 +4572,105 @@ function getTableSurfaceY() {
 
 function getTableItemY(item, scale = 1) {
   return getTableSurfaceY() + getItemVisualHeight(item) * scale / 2 + 0.01;
+}
+
+function clampSpeedTuningOrder() {
+  // 保证 settled < slowSlideMax < normalMax
+  if (speedTuning.slowSlideMax <= speedTuning.settled + 0.05) {
+    speedTuning.slowSlideMax = Number((speedTuning.settled + 0.05).toFixed(2));
+  }
+  if (speedTuning.normalMax <= speedTuning.slowSlideMax + 0.05) {
+    speedTuning.normalMax = Number((speedTuning.slowSlideMax + 0.05).toFixed(2));
+  }
+}
+
+function initSpeedPanel() {
+  if (!speedControlsEl) return;
+  const controls = [
+    {
+      key: 'settled',
+      label: '停稳上限（格/秒）',
+      min: 0.1,
+      max: 1.2,
+      step: 0.02,
+      tip: '低于此=停稳'
+    },
+    {
+      key: 'slowSlideMax',
+      label: '慢滑上限（格/秒）',
+      min: 0.2,
+      max: 2.0,
+      step: 0.02,
+      tip: '停稳～此值=慢滑对准'
+    },
+    {
+      key: 'normalMax',
+      label: '正常挪上限（格/秒）',
+      min: 0.5,
+      max: 4.0,
+      step: 0.05,
+      tip: '慢滑～此值=正常挪；更高=快甩'
+    },
+    {
+      key: 'axisConfidence',
+      label: '慢滑主轴置信',
+      min: 0.4,
+      max: 0.95,
+      step: 0.01,
+      tip: '左右/上下够稳才算慢滑'
+    }
+  ];
+
+  speedControlsEl.innerHTML = controls.map((control) => `
+    <label class="camera-control">
+      <span>${control.label}</span>
+      <input
+        data-speed-key="${control.key}"
+        type="range"
+        min="${control.min}"
+        max="${control.max}"
+        step="${control.step}"
+        value="${speedTuning[control.key]}"
+      />
+      <output data-speed-output="${control.key}">${Number(speedTuning[control.key]).toFixed(2)}</output>
+    </label>
+  `).join('');
+
+  const applyFromInputs = () => {
+    for (const input of speedControlsEl.querySelectorAll('[data-speed-key]')) {
+      const key = input.dataset.speedKey;
+      speedTuning[key] = Number(input.value);
+    }
+    clampSpeedTuningOrder();
+    for (const input of speedControlsEl.querySelectorAll('[data-speed-key]')) {
+      const key = input.dataset.speedKey;
+      input.value = speedTuning[key];
+      syncSpeedPanelValue(key);
+    }
+    if (activeItem) updateDragSpeedHud(activeItem);
+  };
+
+  speedControlsEl.addEventListener('input', (event) => {
+    const input = event.target.closest('[data-speed-key]');
+    if (!input) return;
+    applyFromInputs();
+  });
+
+  speedResetBtn?.addEventListener('click', () => {
+    Object.assign(speedTuning, defaultSpeedTuning);
+    for (const input of speedControlsEl.querySelectorAll('[data-speed-key]')) {
+      const key = input.dataset.speedKey;
+      input.value = speedTuning[key];
+      syncSpeedPanelValue(key);
+    }
+    if (activeItem) updateDragSpeedHud(activeItem);
+  });
+}
+
+function syncSpeedPanelValue(key) {
+  if (!speedControlsEl) return;
+  const output = speedControlsEl.querySelector(`[data-speed-output="${key}"]`);
+  if (output) output.textContent = Number(speedTuning[key]).toFixed(2);
 }
 
 function initCameraPanel() {
