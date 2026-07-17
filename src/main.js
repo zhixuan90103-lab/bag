@@ -668,6 +668,7 @@ let pendingPointerItem = null;
 let pendingPointerId = null;
 let pendingPointerStart = { x: 0, y: 0 };
 let pendingPointerEvent = null;
+let activePointerId = null;
 const DRAG_START_THRESHOLD_PX = 10;
 let completionShown = false;
 let tableMesh = null;
@@ -861,19 +862,26 @@ function initTray() {
   trayGroup.clear();
 }
 
-function releasePointerCaptureSafe() {
+function releasePointerCaptureSafe(pointerId = null) {
   try {
-    canvas.releasePointerCapture?.();
+    if (pointerId != null && canvas.hasPointerCapture?.(pointerId)) {
+      canvas.releasePointerCapture(pointerId);
+    }
   } catch {
     /* ignore */
   }
 }
 
 function stopGameplayInteraction() {
+  releasePointerCaptureSafe(pendingPointerId);
+  releasePointerCaptureSafe(activePointerId);
   pendingPointerItem = null;
   pendingPointerId = null;
+  pendingPointerStart = null;
+  pendingPointerEvent = null;
+  activePointerId = null;
   if (activeItem) {
-    releasePointerCaptureSafe();
+    restoreActiveItem();
     activeItem = null;
     candidate = null;
   }
@@ -961,6 +969,7 @@ function rebuildItems() {
     const item = {
       ...data,
       rotation: trayRotation,
+      initialTrayRotation: trayRotation,
       trayRotation,
       placed: false,
       gridX: null,
@@ -1258,8 +1267,13 @@ function resetBoxRigPose() {
 }
 
 function startOpeningSequence() {
+  releasePointerCaptureSafe(pendingPointerId);
+  releasePointerCaptureSafe(activePointerId);
   pendingPointerItem = null;
   pendingPointerId = null;
+  pendingPointerStart = null;
+  pendingPointerEvent = null;
+  activePointerId = null;
   if (activeItem) {
     restoreActiveItem();
     activeItem = null;
@@ -1280,8 +1294,13 @@ function startOpeningSequence() {
 
 function startClosingSequence() {
   if (gamePhase !== 'play' || completionShown) return;
+  releasePointerCaptureSafe(pendingPointerId);
+  releasePointerCaptureSafe(activePointerId);
   pendingPointerItem = null;
   pendingPointerId = null;
+  pendingPointerStart = null;
+  pendingPointerEvent = null;
+  activePointerId = null;
   if (activeItem) {
     restoreActiveItem();
     activeItem = null;
@@ -1748,6 +1767,7 @@ function onPointerDown(event) {
 function beginDragItem(item, event) {
   clearHint();
   activeItem = item;
+  activePointerId = event.pointerId;
   activeItem.wasPlaced = activeItem.placed;
   activeItem.dragStartRotation = activeItem.rotation;
   activeItem.lastAutoRotationAt = 0;
@@ -1840,6 +1860,7 @@ function onPointerUp(event) {
     restoreActiveItem();
     setItemShadow(activeItem, true);
     activeItem = null;
+    activePointerId = null;
     pendingPointerItem = null;
     pendingPointerId = null;
     pendingPointerEvent = null;
@@ -1862,6 +1883,7 @@ function onPointerUp(event) {
   activeItem.finalIntentPlacement = null;
   activeItem.dragStartRotation = null;
   activeItem = null;
+  activePointerId = null;
   pendingPointerItem = null;
   pendingPointerId = null;
   pendingPointerEvent = null;
@@ -4418,7 +4440,8 @@ function resetLevel() {
   undoStack = [];
   trayQueue = [...items];
   for (const item of items) {
-    item.rotation = item.trayRotation ?? getCompactTrayRotation(item);
+    item.rotation = item.initialTrayRotation ?? getCompactTrayRotation(item);
+    item.trayRotation = item.rotation;
     item.placed = false;
     item.gridX = null;
     item.gridY = null;
@@ -4426,7 +4449,11 @@ function resetLevel() {
     item.lastValid = null;
     item.trayVisible = false;
     item.targetPosition = null;
+    item.targetRotationY = undefined;
     item.finalIntentPlacement = null;
+    item.dragStartRotation = null;
+    item.previousPlacement = null;
+    clearAssistRotateSession(item);
     setItemRotationImmediate(item, item.rotation);
     item.mesh.visible = true;
     setItemScale(item, trayScale);
@@ -4445,6 +4472,7 @@ function pushUndoSnapshot() {
     items: items.map((item) => ({
       id: item.id,
       rotation: item.rotation,
+      trayRotation: item.trayRotation,
       placed: item.placed,
       gridX: item.gridX,
       gridY: item.gridY,
@@ -4472,6 +4500,7 @@ function undoLastMove() {
   if (activeItem) {
     restoreActiveItem();
     activeItem = null;
+    activePointerId = null;
     candidate = null;
   }
 
@@ -4485,13 +4514,16 @@ function undoLastMove() {
     const item = itemById.get(state.id);
     if (!item) continue;
     item.placed = state.placed;
-    item.rotation = state.placed ? state.rotation : item.trayRotation ?? getCompactTrayRotation(item);
+    item.rotation = state.rotation;
+    item.trayRotation = state.trayRotation ?? (state.placed ? item.trayRotation : state.rotation);
     item.gridX = state.gridX;
     item.gridY = state.gridY;
     item.level = state.level;
     item.lastValid = state.lastValid;
     item.finalIntentPlacement = null;
     item.dragStartRotation = null;
+    item.previousPlacement = null;
+    item.targetRotationY = undefined;
     if (!item.placed) clearAssistRotateSession(item);
     else clearAutoRotateIntent(item);
     setItemRotationImmediate(item, item.rotation);
