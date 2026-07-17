@@ -80,8 +80,38 @@ body {
   max-height: min(320px, calc(100dvh - 48px));
 }
 
+.drag-motion-panel {
+  top: calc(50% - 170px);
+  left: calc(50% + 235px);
+  transform: none;
+  max-height: min(360px, calc(100dvh - 48px));
+}
+
+.drag-motion-toggle {
+  position: fixed;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: calc(max(12px, env(safe-area-inset-bottom)) + 78px);
+  z-index: 30;
+  width: 58px;
+  height: 38px;
+  border: 1px solid rgba(82, 58, 35, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 251, 243, 0.94);
+  color: #3f3025;
+  box-shadow: 0 10px 28px rgba(62, 45, 31, 0.18);
+  font-size: 13px;
+  font-weight: 800;
+  backdrop-filter: blur(14px);
+}
+
+.drag-motion-toggle[aria-expanded="true"] {
+  background: #4e79ff;
+  color: #fff;
+}
+
 /* 任意端：带 hidden 必须不可见（防媒体查询 display 覆盖） */
-.speed-panel[hidden] {
+.speed-panel[hidden],
+.drag-motion-panel[hidden] {
   display: none !important;
 }
 
@@ -474,6 +504,28 @@ button {
   }
 
   .speed-panel[hidden] {
+    display: none !important;
+  }
+
+  .drag-motion-toggle {
+    right: max(10px, env(safe-area-inset-right));
+    bottom: calc(max(10px, env(safe-area-inset-bottom)) + 70px);
+  }
+
+  .drag-motion-panel:not([hidden]) {
+    display: block;
+    position: fixed;
+    top: auto;
+    bottom: calc(max(12px, env(safe-area-inset-bottom)) + 118px);
+    left: 10px;
+    right: auto;
+    width: min(260px, calc(100vw - 24px));
+    max-height: 45vh;
+    z-index: 29;
+    transform: none;
+  }
+
+  .drag-motion-panel[hidden] {
     display: none !important;
   }
 }

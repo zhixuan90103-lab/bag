@@ -18,9 +18,13 @@ const trayZ = 4.85;
 const trayEntryOffsetX = 1.15;
 const trayLerpAlpha = 0.18;
 const rotationLerpAlpha = 0.12;
-const DRAG_VISUAL_OFFSET_SCREEN_Y = 112;
-const DRAG_MOVE_GAIN_X = 1.3;
-const DRAG_MOVE_GAIN_Z = 1.45;
+const defaultDragMotionTuning = {
+  visualOffsetY: 112,
+  moveGainX: 1.3,
+  moveGainZ: 1.85,
+  boxClearance: 0.18
+};
+const dragMotionTuning = { ...defaultDragMotionTuning };
 const PICKUP_INTENT_RADIUS_PX = 56;
 const PICKUP_SMALL_ITEM_RADIUS_PX = 72;
 const PICKUP_DISTANCE_WEIGHT = 1;
@@ -390,7 +394,6 @@ const AUTO_ROTATE_KICKS_LONG = [
 const scaleLerpAlpha = 0.2;
 /** 拖拽中相对入箱尺寸的略放大，便于对准 */
 const DRAG_SCALE_BOOST = 1.06;
-const DRAG_BOX_CLEARANCE = 0.18;
 const CAMERA_FIT_PADDING = 1.22;
 
 /**
@@ -513,6 +516,26 @@ speedPanel.innerHTML = `
 `;
 document.body.appendChild(speedPanel);
 
+const dragMotionPanelToggle = document.createElement('button');
+dragMotionPanelToggle.id = 'dragMotionPanelToggle';
+dragMotionPanelToggle.className = 'drag-motion-toggle';
+dragMotionPanelToggle.type = 'button';
+dragMotionPanelToggle.textContent = 'Drag';
+document.body.appendChild(dragMotionPanelToggle);
+
+const dragMotionPanel = document.createElement('aside');
+dragMotionPanel.className = 'camera-panel drag-motion-panel';
+dragMotionPanel.hidden = true;
+dragMotionPanel.innerHTML = `
+  <div class="camera-panel__head">
+    <strong>Drag 映射</strong>
+    <button id="dragMotionResetBtn" type="button">重置</button>
+  </div>
+  <p class="speed-panel__hint">手机实时调参：Z 越大，向上滑动越省力。</p>
+  <div class="camera-grid" id="dragMotionControls"></div>
+`;
+document.body.appendChild(dragMotionPanel);
+
 const canvas = document.querySelector('#game');
 const orderTitleEl = document.querySelector('#orderTitle');
 const statusEl = document.querySelector('#status');
@@ -537,6 +560,8 @@ const tableControlsEl = document.querySelector('#tableControls');
 const tableResetBtn = document.querySelector('#tableResetBtn');
 const speedControlsEl = document.querySelector('#speedControls');
 const speedResetBtn = document.querySelector('#speedResetBtn');
+const dragMotionControlsEl = document.querySelector('#dragMotionControls');
+const dragMotionResetBtn = document.querySelector('#dragMotionResetBtn');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#f6efe4');
@@ -701,6 +726,7 @@ initCameraPanel();
 initLightPanel();
 initTablePanel();
 initSpeedPanel();
+initDragMotionPanel();
 fitCameraToBox();
 updateOrderCard();
 resize();
@@ -1668,7 +1694,7 @@ function getDragItemScale() {
 function getDragPickupY(item) {
   const dragScale = getDragItemScale();
   const halfHeight = getItemVisualHeight(item) * dragScale / 2;
-  return grid.wallHeight + halfHeight + DRAG_BOX_CLEARANCE;
+  return grid.wallHeight + halfHeight + dragMotionTuning.boxClearance;
 }
 
 function setItemScale(item, xzScale, yScale = xzScale) {
@@ -1812,7 +1838,7 @@ function beginDragItem(item, event) {
   raycaster.ray.intersectPlane(dragPlane, hitPoint);
   dragOffset.copy(activeItem.mesh.position).sub(hitPoint);
   dragOffset.y = 0;
-  updatePointer(event, DRAG_VISUAL_OFFSET_SCREEN_Y);
+  updatePointer(event, dragMotionTuning.visualOffsetY);
   if (raycaster.ray.intersectPlane(dragPlane, hitPoint)) {
     activeItem.mesh.position.x = hitPoint.x + dragOffset.x;
     activeItem.mesh.position.z = hitPoint.z + dragOffset.z;
@@ -1839,10 +1865,10 @@ function onPointerMove(event) {
   }
   if (!activeItem || isGameplayLocked()) return;
   event.preventDefault();
-  updatePointer(event, DRAG_VISUAL_OFFSET_SCREEN_Y);
+  updatePointer(event, dragMotionTuning.visualOffsetY);
   if (!raycaster.ray.intersectPlane(dragPlane, hitPoint)) return;
-  activeItem.mesh.position.x = dragStartPosition.x + (hitPoint.x - dragStartHit.x) * DRAG_MOVE_GAIN_X;
-  activeItem.mesh.position.z = dragStartPosition.z + (hitPoint.z - dragStartHit.z) * DRAG_MOVE_GAIN_Z;
+  activeItem.mesh.position.x = dragStartPosition.x + (hitPoint.x - dragStartHit.x) * dragMotionTuning.moveGainX;
+  activeItem.mesh.position.z = dragStartPosition.z + (hitPoint.z - dragStartHit.z) * dragMotionTuning.moveGainZ;
   sampleDragTrail(activeItem, activeItem.mesh.position);
   candidate = getIntentCandidate(activeItem, activeItem.mesh.position);
   updateIntentDebugHud(activeItem, activeItem.lastIntentChannel);
@@ -4884,6 +4910,98 @@ function syncSpeedPanelValue(key) {
   if (!speedControlsEl) return;
   const output = speedControlsEl.querySelector(`[data-speed-output="${key}"]`);
   if (output) output.textContent = Number(speedTuning[key]).toFixed(2);
+}
+
+function initDragMotionPanel() {
+  if (!dragMotionControlsEl || !dragMotionPanel || !dragMotionPanelToggle) return;
+  const controls = [
+    {
+      key: 'moveGainX',
+      label: '左右增益 X',
+      min: 0.8,
+      max: 2.2,
+      step: 0.01,
+      decimals: 2
+    },
+    {
+      key: 'moveGainZ',
+      label: '上下增益 Z',
+      min: 0.8,
+      max: 2.6,
+      step: 0.01,
+      decimals: 2
+    },
+    {
+      key: 'visualOffsetY',
+      label: '物品上移 px',
+      min: 60,
+      max: 180,
+      step: 1,
+      decimals: 0
+    },
+    {
+      key: 'boxClearance',
+      label: '箱体避让',
+      min: 0,
+      max: 0.45,
+      step: 0.01,
+      decimals: 2
+    }
+  ];
+
+  dragMotionControlsEl.innerHTML = controls.map((control) => `
+    <label class="camera-control drag-motion-control">
+      <span>${control.label}</span>
+      <input
+        data-drag-motion-key="${control.key}"
+        data-decimals="${control.decimals}"
+        type="range"
+        min="${control.min}"
+        max="${control.max}"
+        step="${control.step}"
+        value="${dragMotionTuning[control.key]}"
+      />
+      <output data-drag-motion-output="${control.key}">${formatDragMotionValue(control.key)}</output>
+    </label>
+  `).join('');
+
+  dragMotionPanelToggle.addEventListener('click', () => {
+    const nextHidden = !dragMotionPanel.hidden;
+    dragMotionPanel.hidden = nextHidden;
+    dragMotionPanelToggle.setAttribute('aria-expanded', String(!nextHidden));
+  });
+
+  dragMotionControlsEl.addEventListener('input', (event) => {
+    const input = event.target.closest('[data-drag-motion-key]');
+    if (!input) return;
+    const key = input.dataset.dragMotionKey;
+    dragMotionTuning[key] = Number(input.value);
+    syncDragMotionPanelValue(key);
+  });
+
+  dragMotionResetBtn?.addEventListener('click', () => {
+    Object.assign(dragMotionTuning, defaultDragMotionTuning);
+    for (const input of dragMotionControlsEl.querySelectorAll('[data-drag-motion-key]')) {
+      const key = input.dataset.dragMotionKey;
+      input.value = dragMotionTuning[key];
+      syncDragMotionPanelValue(key);
+    }
+  });
+
+  dragMotionPanelToggle.setAttribute('aria-controls', 'dragMotionPanel');
+  dragMotionPanelToggle.setAttribute('aria-expanded', 'false');
+  dragMotionPanel.id = 'dragMotionPanel';
+}
+
+function syncDragMotionPanelValue(key) {
+  if (!dragMotionControlsEl) return;
+  const output = dragMotionControlsEl.querySelector(`[data-drag-motion-output="${key}"]`);
+  if (output) output.textContent = formatDragMotionValue(key);
+}
+
+function formatDragMotionValue(key) {
+  const decimals = key === 'visualOffsetY' ? 0 : 2;
+  return Number(dragMotionTuning[key]).toFixed(decimals);
 }
 
 function initCameraPanel() {
