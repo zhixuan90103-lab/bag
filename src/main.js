@@ -11,12 +11,39 @@ const TRAY_CELL_SIZE = 0.78;
 let itemCellSize = TRAY_CELL_SIZE;
 let blockHeight = itemCellSize;
 const trayScale = 0.8;
+/** false 时完整保留 3 槽现网行为；true 启用 A2 全量可滑托盘（v2） */
+const A2_FULL_TRAY_SCROLL = true;
 const trayVisibleCount = 3;
+/** 旧三槽中心；A2 v2 用 pitch 复现「一屏 3 件居中」 */
 const traySlotXs = [-1.55, 0, 1.55];
+const TRAY_SLOT_PITCH = traySlotXs[1] - traySlotXs[0]; // 1.55
 const trayMinGap = 0.24;
 const trayZ = 4.85;
 const trayEntryOffsetX = 1.15;
 const trayLerpAlpha = 0.18;
+/**
+ * 滑/拖消歧（点在物品上：优先拖；空白处：只滑）
+ * - 物品上：几乎纯横才 scroll；有上提分量即 drag
+ * - 空白：一律 scroll
+ */
+const TRAY_COMMIT_SLOP_ON_ITEM_PX = 12;
+const TRAY_COMMIT_SLOP_EMPTY_PX = 14;
+/** 点在物品上：横向必须非常明显才判 scroll */
+const TRAY_SCROLL_PURE_RATIO = 1.9;
+const TRAY_TAP_MAX_MS = 320;
+const TRAY_SCROLL_VELOCITY_FRICTION = 6.5;
+const TRAY_SCROLL_VELOCITY_EPS = 0.02;
+/**
+ * 橡皮筋：可拉约 1 件长度（线性阻尼，不再双重压缩）
+ * 松手：较快弹回合法边
+ */
+const TRAY_RUBBER_MAX = TRAY_SLOT_PITCH;
+const TRAY_RUBBER_PULL = 0.62;
+const TRAY_RUBBER_STIFFNESS = 48;
+const TRAY_RUBBER_DAMPING = 9;
+/** 淡出带：三槽全显，外侧渐隐（无 hard hide 闪现） */
+const TRAY_FADE_START = TRAY_SLOT_PITCH + 0.7;
+const TRAY_FADE_END = TRAY_SLOT_PITCH * 2 + 0.4;
 const rotationLerpAlpha = 0.12;
 const defaultDragMotionTuning = {
   visualOffsetY: 112,
@@ -718,6 +745,23 @@ let pendingPointerStart = { x: 0, y: 0 };
 let pendingPointerEvent = null;
 let activePointerId = null;
 const DRAG_START_THRESHOLD_PX = 10;
+/** A2 托盘手势：idle | pending | scroll | drag */
+let trayPointerMode = 'idle';
+let trayScrollOffsetX = 0;
+/** 未加 scroll 的条上中心 X（与 trayQueue 对齐） */
+let trayBaseCenters = [];
+let trayContentMinX = 0;
+let trayContentMaxX = 0;
+let trayScrollVelocity = 0;
+let trayScrollLastClientX = 0;
+let trayScrollLastClientY = 0;
+let trayScrollLastTime = 0;
+let trayPendingStartTime = 0;
+const trayScrollRayPoint = new THREE.Vector3();
+const trayScrollRayPrev = new THREE.Vector3();
+const trayScrollPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+/** 须在首次 animate() 调用前初始化（避免 TDZ） */
+let lastFrameTime = performance.now();
 let completionShown = false;
 let tableMesh = null;
 let undoStack = [];
@@ -912,6 +956,7 @@ function rebuildBoard() {
 }
 
 function initTray() {
+  // v2：无视觉托盘轨/挡块；边界只靠滚动橡皮筋
   trayGroup.clear();
 }
 
@@ -1043,7 +1088,10 @@ function rebuildItems() {
     return item;
   });
   trayQueue = [...items];
-  layoutTrayQueue({ animate: false });
+  trayScrollOffsetX = 0;
+  trayScrollVelocity = 0;
+  trayPointerMode = 'idle';
+  layoutTrayQueue({ animate: false, preserveScroll: false });
   refreshStatus();
 }
 
@@ -1856,6 +1904,12 @@ function onPointerDown(event) {
   }
   if (isGameplayLocked()) return;
   if (activeItem || pendingPointerItem) return;
+
+  if (A2_FULL_TRAY_SCROLL) {
+    onPointerDownA2(event);
+    return;
+  }
+
   const picked = pickItem(event);
   if (!picked) return;
   event.preventDefault();
@@ -1864,6 +1918,455 @@ function onPointerDown(event) {
   pendingPointerStart = { x: event.clientX, y: event.clientY };
   pendingPointerEvent = event;
   canvas.setPointerCapture(event.pointerId);
+}
+
+function stopTrayScrollMomentum() {
+  trayScrollVelocity = 0;
+}
+
+function intersectTrayPlane(clientX, clientY, target) {
+  const rect = canvas.getBoundingClientRect();
+  pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  // y = 桌面附近：Plane (0,1,0)·p + c = 0 → c = -y
+  const y = getTableSurfaceY() + 0.2;
+  trayScrollPlane.set(new THREE.Vector3(0, 1, 0), -y);
+  return Boolean(raycaster.ray.intersectPlane(trayScrollPlane, target));
+}
+
+/**
+ * v2 合法 scroll 区间 [min, max]：
+ * - 件数 ≤ 3：min = max = 0（默认一屏三件居中，不可空滑）
+ * - 件数 > 3：offset=0 显示前 3；min=-(n-3)*pitch 显示最后 3
+ * 跟手方向：offset 减小 → 内容左移 → 露出更大 index
+ */
+function getTrayScrollBounds() {
+  const n = trayQueue.length;
+  if (n <= 0 || !trayBaseCenters.length) {
+    return { min: 0, max: 0, narrow: true };
+  }
+  if (n <= trayVisibleCount) {
+    return { min: 0, max: 0, narrow: true };
+  }
+  const min = -(n - trayVisibleCount) * TRAY_SLOT_PITCH;
+  const max = 0;
+  return { min, max, narrow: false };
+}
+
+/**
+ * 将 delta 施加到 scroll offset：界内 1:1；越界线性阻尼，最多再拉约 1 件长。
+ * （不做双重非线性，避免「完全拉不动」）
+ */
+function applyTrayScrollDelta(deltaX) {
+  const { min, max } = getTrayScrollBounds();
+  const cur = trayScrollOffsetX;
+  let next = cur + deltaX;
+
+  if (next > max) {
+    if (cur < max) {
+      const toEdge = max - cur;
+      const rest = deltaX - toEdge;
+      next = max + rest * TRAY_RUBBER_PULL;
+    } else {
+      next = cur + deltaX * TRAY_RUBBER_PULL;
+    }
+    next = Math.min(next, max + TRAY_RUBBER_MAX);
+  } else if (next < min) {
+    if (cur > min) {
+      const toEdge = cur - min;
+      const rest = -deltaX - toEdge;
+      next = min - rest * TRAY_RUBBER_PULL;
+    } else {
+      next = cur + deltaX * TRAY_RUBBER_PULL;
+    }
+    next = Math.max(next, min - TRAY_RUBBER_MAX);
+  }
+
+  trayScrollOffsetX = next;
+}
+
+/**
+ * 托盘件透明度：窗内 1，外侧平滑淡出到 0（避免 visible 开关闪一下）。
+ */
+function getTrayItemEdgeOpacity(worldX) {
+  const ax = Math.abs(worldX);
+  if (ax <= TRAY_FADE_START) return 1;
+  if (ax >= TRAY_FADE_END) return 0;
+  const t = (ax - TRAY_FADE_START) / (TRAY_FADE_END - TRAY_FADE_START);
+  // smoothstep
+  const s = t * t * (3 - 2 * t);
+  return 1 - s;
+}
+
+function applyTrayItemEdgeFade(item, worldX) {
+  if (!item?.mesh || item === activeItem || item === hintMove?.item) return;
+  const opacity = getTrayItemEdgeOpacity(worldX);
+  // 始终保持 visible，只改透明度，避免「突然出现」一帧
+  item.mesh.visible = true;
+  item.trayVisible = opacity > 0.14;
+  item.mesh.traverse((object) => {
+    if (!object.isMesh || !object.material) return;
+    const mats = Array.isArray(object.material) ? object.material : [object.material];
+    for (const mat of mats) {
+      mat.transparent = opacity < 0.999;
+      mat.opacity = opacity;
+      mat.depthWrite = opacity >= 0.95;
+      mat.needsUpdate = true;
+    }
+    if (object.isMesh) object.castShadow = opacity > 0.35;
+  });
+}
+
+/** 布局/重置：立刻贴回合法区（无橡皮） */
+function clampTrayScrollOffset() {
+  const { min, max } = getTrayScrollBounds();
+  trayScrollOffsetX = THREE.MathUtils.clamp(trayScrollOffsetX, min, max);
+}
+
+function isTrayScrollOutOfBounds() {
+  const { min, max } = getTrayScrollBounds();
+  return trayScrollOffsetX < min - 1e-4 || trayScrollOffsetX > max + 1e-4;
+}
+
+function applyTrayScrollToItems({ immediate = true } = {}) {
+  if (!A2_FULL_TRAY_SCROLL) return;
+  trayQueue.forEach((item, index) => {
+    if (item.placed || item === activeItem || item === hintMove?.item) return;
+    const base = trayBaseCenters[index];
+    if (base === undefined) return;
+    const x = base + trayScrollOffsetX;
+    const y = getTableItemY(item, trayScale);
+    if (!item.targetPosition) item.targetPosition = new THREE.Vector3();
+    item.targetPosition.set(x, y, trayZ);
+    item.homePosition = item.targetPosition.clone();
+    if (immediate || trayPointerMode === 'scroll') {
+      item.mesh.position.x = x;
+      item.mesh.position.y = y;
+      item.mesh.position.z = trayZ;
+    }
+    applyTrayItemEdgeFade(item, x);
+  });
+}
+
+function onPointerDownA2(event) {
+  stopTrayScrollMomentum();
+  trayPointerMode = 'pending';
+  // 起手：射线优先 + 略放大 fuzzy，降低「点不中」
+  const picked = pickItem(event, { allowFuzzy: true, fuzzyScale: 1.15 });
+  // 托盘空白也可开始 pending → 仅 scroll
+  const canScrollEmpty = isPointerNearTrayBand(event);
+  if (!picked && !canScrollEmpty) {
+    trayPointerMode = 'idle';
+    return;
+  }
+  if (picked?.placed) {
+    // 箱内块：走旧逻辑起手 pending → 出 slop 即 drag（无 scroll 竞争）
+    event.preventDefault();
+    pendingPointerItem = picked;
+    pendingPointerId = event.pointerId;
+    pendingPointerStart = { x: event.clientX, y: event.clientY };
+    pendingPointerEvent = event;
+    trayPendingStartTime = performance.now();
+    trayPointerMode = 'pending';
+    canvas.setPointerCapture(event.pointerId);
+    return;
+  }
+  event.preventDefault();
+  pendingPointerItem = picked && !picked.placed ? picked : null;
+  pendingPointerId = event.pointerId;
+  pendingPointerStart = { x: event.clientX, y: event.clientY };
+  pendingPointerEvent = event;
+  trayPendingStartTime = performance.now();
+  trayScrollLastClientX = event.clientX;
+  trayScrollLastClientY = event.clientY;
+  trayScrollLastTime = performance.now();
+  canvas.setPointerCapture(event.pointerId);
+}
+
+function isPointerNearTrayBand(event) {
+  if (!intersectTrayPlane(event.clientX, event.clientY, trayScrollRayPoint)) return false;
+  // 托盘带：靠前桌面；X 覆盖三槽可视宽 + 余量
+  const half = TRAY_SLOT_PITCH * 1.6;
+  return trayScrollRayPoint.z > trayZ - 1.8 && trayScrollRayPoint.z < trayZ + 1.2
+    && trayScrollRayPoint.x > -half - 0.5
+    && trayScrollRayPoint.x < half + 0.5;
+}
+
+function commitTrayPendingToScroll(event) {
+  trayPointerMode = 'scroll';
+  // 以上一次 pending 起点为 prev，使本帧位移立刻作用到条上
+  trayScrollLastClientX = pendingPointerStart?.x ?? event.clientX;
+  trayScrollLastClientY = pendingPointerStart?.y ?? event.clientY;
+  trayScrollLastTime = performance.now();
+  trayScrollVelocity = 0;
+  pendingPointerItem = null;
+}
+
+function commitTrayPendingToDrag(event) {
+  const item = pendingPointerItem;
+  if (!item) {
+    commitTrayPendingToScroll(event);
+    return;
+  }
+  trayPointerMode = 'drag';
+  pendingPointerItem = null;
+  pendingPointerEvent = null;
+  beginDragItem(item, event);
+}
+
+function onPointerMoveA2(event) {
+  if (pendingPointerId != null && event.pointerId !== pendingPointerId && !activeItem) return;
+
+  if (trayPointerMode === 'pending' && event.pointerId === pendingPointerId) {
+    event.preventDefault();
+    const dx = event.clientX - pendingPointerStart.x;
+    const dy = event.clientY - pendingPointerStart.y;
+    const disp = Math.hypot(dx, dy);
+    const onItem = Boolean(pendingPointerItem);
+    const slop = onItem ? TRAY_COMMIT_SLOP_ON_ITEM_PX : TRAY_COMMIT_SLOP_EMPTY_PX;
+    if (disp < slop) return;
+
+    // 箱内已放块：直接 drag
+    if (pendingPointerItem?.placed) {
+      commitTrayPendingToDrag(event);
+      return;
+    }
+
+    const adx = Math.abs(dx);
+    const ady = Math.abs(dy);
+
+    if (!onItem) {
+      // 空白托盘带：只滚
+      commitTrayPendingToScroll(event);
+    } else if (adx >= ady * TRAY_SCROLL_PURE_RATIO && adx >= slop) {
+      // 物品上：几乎纯横 → 滑条
+      commitTrayPendingToScroll(event);
+    } else if (dy < 0) {
+      // 物品上：只要有上提 → 拿起（解决「想拖却变成滑」）
+      commitTrayPendingToDrag(event);
+    } else if (adx > ady) {
+      // 横移为主且非上提 → 滑
+      commitTrayPendingToScroll(event);
+    } else if (disp >= slop * 1.6) {
+      // 往下抹等：当滑，不拖进桌面
+      commitTrayPendingToScroll(event);
+    }
+    // fall through if became scroll
+  }
+
+  if (trayPointerMode === 'scroll' && event.pointerId === pendingPointerId) {
+    event.preventDefault();
+    const now = performance.now();
+    const prevX = trayScrollLastClientX;
+    if (
+      intersectTrayPlane(prevX, trayScrollLastClientY, trayScrollRayPrev)
+      && intersectTrayPlane(event.clientX, event.clientY, trayScrollRayPoint)
+    ) {
+      const deltaX = trayScrollRayPoint.x - trayScrollRayPrev.x;
+      const prevOffset = trayScrollOffsetX;
+      applyTrayScrollDelta(deltaX);
+      applyTrayScrollToItems({ immediate: true });
+      const dt = Math.max(1, now - trayScrollLastTime) / 1000;
+      trayScrollVelocity = (trayScrollOffsetX - prevOffset) / dt;
+    }
+    trayScrollLastClientX = event.clientX;
+    trayScrollLastClientY = event.clientY;
+    trayScrollLastTime = now;
+    return;
+  }
+
+  if (trayPointerMode === 'drag' || activeItem) {
+    onPointerMoveDrag(event);
+  }
+}
+
+function onPointerMoveDrag(event) {
+  if (!activeItem || isGameplayLocked()) return;
+  event.preventDefault();
+  updatePointer(event, dragMotionTuning.visualOffsetY);
+  if (!raycaster.ray.intersectPlane(dragPlane, hitPoint)) return;
+  activeItem.mesh.position.x = dragStartPosition.x + (hitPoint.x - dragStartHit.x) * dragMotionTuning.moveGainX;
+  activeItem.mesh.position.z = dragStartPosition.z + (hitPoint.z - dragStartHit.z) * dragMotionTuning.moveGainZ;
+  sampleDragTrail(activeItem, activeItem.mesh.position);
+  candidate = getIntentCandidate(activeItem, activeItem.mesh.position);
+  updateIntentDebugHud(activeItem, activeItem.lastIntentChannel);
+  updateActiveItemDragScale();
+  showGridGuide(
+    candidate?.guideLevel ?? candidate?.displayBaseLevel ?? candidate?.baseLevel ?? 0,
+    { heightExceeded: candidate?.inside && candidate?.reason === 'height-exceeded' }
+  );
+  updateGhost(candidate);
+  updatePlacementOccluderFade(candidate);
+}
+
+function onPointerUpA2(event) {
+  if (pendingPointerId != null && event.pointerId !== pendingPointerId && trayPointerMode !== 'drag') {
+    return;
+  }
+
+  if (trayPointerMode === 'pending' && event.pointerId === pendingPointerId) {
+    event.preventDefault();
+    const item = pendingPointerItem;
+    const elapsed = performance.now() - trayPendingStartTime;
+    const dx = event.clientX - pendingPointerStart.x;
+    const dy = event.clientY - pendingPointerStart.y;
+    const disp = Math.hypot(dx, dy);
+    pendingPointerItem = null;
+    pendingPointerId = null;
+    pendingPointerEvent = null;
+    trayPointerMode = 'idle';
+    try {
+      canvas.releasePointerCapture(event.pointerId);
+    } catch {
+      /* ignore */
+    }
+    if (
+      event.type !== 'pointercancel'
+      && item
+      && !item.placed
+      && elapsed <= TRAY_TAP_MAX_MS
+      && disp < DRAG_START_THRESHOLD_PX
+    ) {
+      rotateItemByTap(item);
+    }
+    return;
+  }
+
+  if (trayPointerMode === 'scroll' && event.pointerId === pendingPointerId) {
+    event.preventDefault();
+    pendingPointerId = null;
+    pendingPointerItem = null;
+    trayPointerMode = 'idle';
+    try {
+      canvas.releasePointerCapture(event.pointerId);
+    } catch {
+      /* ignore */
+    }
+    const { min, max } = getTrayScrollBounds();
+    if (isTrayScrollOutOfBounds()) {
+      // 松手快弹：朝合法边给初速
+      const target = trayScrollOffsetX > max ? max : min;
+      trayScrollVelocity = (target - trayScrollOffsetX) * 14;
+    } else if (Math.abs(trayScrollVelocity) < TRAY_SCROLL_VELOCITY_EPS * 20) {
+      trayScrollVelocity = 0;
+      trayScrollOffsetX = THREE.MathUtils.clamp(trayScrollOffsetX, min, max);
+    }
+    return;
+  }
+
+  // drag 结束
+  if (activeItem) {
+    onPointerUpDrag(event);
+    trayPointerMode = 'idle';
+  }
+}
+
+function onPointerUpDrag(event) {
+  if (!activeItem) return;
+  event.preventDefault();
+  if (gamePhase !== 'play') {
+    restoreActiveItem();
+    setItemOpacity(activeItem, 1);
+    setItemShadow(activeItem, true);
+    activeItem = null;
+    activePointerId = null;
+    pendingPointerItem = null;
+    pendingPointerId = null;
+    pendingPointerEvent = null;
+    candidate = null;
+    hideGridGuide();
+    updateGhost(null);
+    clearPlacementOccluderFade();
+    updateDragSpeedHud(null);
+    trayPointerMode = 'idle';
+    return;
+  }
+  try {
+    canvas.releasePointerCapture(event.pointerId);
+  } catch {
+    /* ignore */
+  }
+  if (event.type !== 'pointercancel' && candidate?.valid) {
+    placeItem(activeItem, candidate);
+  } else {
+    restoreActiveItem();
+  }
+  setItemOpacity(activeItem, 1);
+  setItemShadow(activeItem, true);
+  if (activeItem.placed) setItemScale(activeItem, getBoardItemScale());
+  activeItem.finalIntentPlacement = null;
+  activeItem.dragStartRotation = null;
+  activeItem = null;
+  activePointerId = null;
+  pendingPointerItem = null;
+  pendingPointerId = null;
+  pendingPointerEvent = null;
+  candidate = null;
+  hideGridGuide();
+  updateGhost(null);
+  clearPlacementOccluderFade();
+  updateDragSpeedHud(null);
+  refreshStatus();
+  trayPointerMode = 'idle';
+}
+
+/**
+ * 松手后：
+ * - 越界/≤3 件：快速弹簧回到合法边（先松后紧的拉已在拖拽中完成）
+ * - 宽内容界内：惯滑；撞边轻回弹
+ */
+function updateTrayScrollMomentum(dt) {
+  if (!A2_FULL_TRAY_SCROLL) return;
+  if (trayPointerMode === 'scroll') return;
+
+  const { min, max, narrow } = getTrayScrollBounds();
+  const outOfBounds = trayScrollOffsetX < min - 1e-4 || trayScrollOffsetX > max + 1e-4;
+
+  if (outOfBounds || (narrow && Math.abs(trayScrollOffsetX - min) > 1e-4)) {
+    const target = trayScrollOffsetX > max ? max : min;
+    const disp = trayScrollOffsetX - target;
+    // 临界阻尼附近：快回到位、少振荡
+    const spring = -TRAY_RUBBER_STIFFNESS * disp - TRAY_RUBBER_DAMPING * trayScrollVelocity;
+    trayScrollVelocity += spring * dt;
+    trayScrollOffsetX += trayScrollVelocity * dt;
+    const crossed =
+      (disp > 0 && trayScrollOffsetX <= target)
+      || (disp < 0 && trayScrollOffsetX >= target);
+    if (crossed || Math.abs(disp) < 0.012) {
+      trayScrollOffsetX = target;
+      trayScrollVelocity = 0;
+    }
+    applyTrayScrollToItems({ immediate: true });
+    return;
+  }
+
+  if (narrow) {
+    trayScrollOffsetX = min;
+    trayScrollVelocity = 0;
+    return;
+  }
+
+  if (Math.abs(trayScrollVelocity) < TRAY_SCROLL_VELOCITY_EPS) {
+    trayScrollVelocity = 0;
+    return;
+  }
+  trayScrollOffsetX += trayScrollVelocity * dt;
+  if (trayScrollOffsetX > max) {
+    trayScrollOffsetX = max + (trayScrollOffsetX - max) * 0.22;
+    trayScrollVelocity *= -0.18;
+  } else if (trayScrollOffsetX < min) {
+    trayScrollOffsetX = min + (trayScrollOffsetX - min) * 0.22;
+    trayScrollVelocity *= -0.18;
+  }
+  applyTrayScrollToItems({ immediate: true });
+  const damp = Math.exp(-TRAY_SCROLL_VELOCITY_FRICTION * dt);
+  trayScrollVelocity *= damp;
+  if (Math.abs(trayScrollVelocity) < TRAY_SCROLL_VELOCITY_EPS) {
+    trayScrollVelocity = 0;
+    trayScrollOffsetX = THREE.MathUtils.clamp(trayScrollOffsetX, min, max);
+    applyTrayScrollToItems({ immediate: true });
+  }
 }
 
 function beginDragItem(item, event) {
@@ -1900,6 +2403,7 @@ function beginDragItem(item, event) {
   activeItem.assistEnteredFromBottomAt = 0;
   activeItem.assistDidRotateThisDrag = false;
   activeItem.dragTrail = [];
+  if (A2_FULL_TRAY_SCROLL) trayPointerMode = 'drag';
   activeItem.previousPlacement = activeItem.placed
     ? { gx: activeItem.gridX, gy: activeItem.gridY, level: activeItem.level, rotation: activeItem.rotation }
     : null;
@@ -1932,6 +2436,10 @@ function beginDragItem(item, event) {
 }
 
 function onPointerMove(event) {
+  if (A2_FULL_TRAY_SCROLL) {
+    onPointerMoveA2(event);
+    return;
+  }
   if (pendingPointerItem && event.pointerId === pendingPointerId && !activeItem) {
     event.preventDefault();
     const dx = event.clientX - pendingPointerStart.x;
@@ -1944,25 +2452,14 @@ function onPointerMove(event) {
       return;
     }
   }
-  if (!activeItem || isGameplayLocked()) return;
-  event.preventDefault();
-  updatePointer(event, dragMotionTuning.visualOffsetY);
-  if (!raycaster.ray.intersectPlane(dragPlane, hitPoint)) return;
-  activeItem.mesh.position.x = dragStartPosition.x + (hitPoint.x - dragStartHit.x) * dragMotionTuning.moveGainX;
-  activeItem.mesh.position.z = dragStartPosition.z + (hitPoint.z - dragStartHit.z) * dragMotionTuning.moveGainZ;
-  sampleDragTrail(activeItem, activeItem.mesh.position);
-  candidate = getIntentCandidate(activeItem, activeItem.mesh.position);
-  updateIntentDebugHud(activeItem, activeItem.lastIntentChannel);
-  updateActiveItemDragScale();
-  showGridGuide(
-    candidate?.guideLevel ?? candidate?.displayBaseLevel ?? candidate?.baseLevel ?? 0,
-    { heightExceeded: candidate?.inside && candidate?.reason === 'height-exceeded' }
-  );
-  updateGhost(candidate);
-  updatePlacementOccluderFade(candidate);
+  onPointerMoveDrag(event);
 }
 
 function onPointerUp(event) {
+  if (A2_FULL_TRAY_SCROLL) {
+    onPointerUpA2(event);
+    return;
+  }
   if (pendingPointerItem && event.pointerId === pendingPointerId && !activeItem) {
     event.preventDefault();
     const item = pendingPointerItem;
@@ -1974,51 +2471,10 @@ function onPointerUp(event) {
     if (event.type !== 'pointercancel') rotateItemByTap(item);
     return;
   }
-  if (!activeItem) return;
-  event.preventDefault();
-  if (gamePhase !== 'play') {
-    restoreActiveItem();
-    setItemOpacity(activeItem, 1);
-    setItemShadow(activeItem, true);
-    activeItem = null;
-    activePointerId = null;
-    pendingPointerItem = null;
-    pendingPointerId = null;
-    pendingPointerEvent = null;
-    candidate = null;
-    hideGridGuide();
-    updateGhost(null);
-    clearPlacementOccluderFade();
-    updateDragSpeedHud(null);
-    return;
-  }
-  canvas.releasePointerCapture(event.pointerId);
-  if (event.type !== 'pointercancel' && candidate?.valid) {
-    placeItem(activeItem, candidate);
-  } else if (candidate?.inside) {
-    restoreActiveItem();
-  } else {
-    restoreActiveItem();
-  }
-  setItemOpacity(activeItem, 1);
-  setItemShadow(activeItem, true);
-  if (activeItem.placed) setItemScale(activeItem, getBoardItemScale());
-  activeItem.finalIntentPlacement = null;
-  activeItem.dragStartRotation = null;
-  activeItem = null;
-  activePointerId = null;
-  pendingPointerItem = null;
-  pendingPointerId = null;
-  pendingPointerEvent = null;
-  candidate = null;
-  hideGridGuide();
-  updateGhost(null);
-  clearPlacementOccluderFade();
-  updateDragSpeedHud(null);
-  refreshStatus();
+  onPointerUpDrag(event);
 }
 
-function pickItem(event) {
+function pickItem(event, { allowFuzzy = true, fuzzyScale = 1 } = {}) {
   updatePointer(event);
   const intersects = raycaster.intersectObjects(itemGroup.children, true);
   let hitPinned = false;
@@ -2035,8 +2491,10 @@ function pickItem(event) {
     }
     if (item.placed || item.trayVisible) return item;
   }
-  const intent = pickItemByIntent(event);
-  if (intent) return intent;
+  if (allowFuzzy && trayPointerMode !== 'scroll') {
+    const intent = pickItemByIntent(event, fuzzyScale);
+    if (intent) return intent;
+  }
   // 只点到被压住的底层时给反馈，避免误以为卡死
   if (hitPinned) showToast('先移开上面的物品');
   return null;
@@ -2048,11 +2506,12 @@ function findItemRoot(object) {
   return current?.parent === itemGroup ? current : null;
 }
 
-function pickItemByIntent(event) {
+function pickItemByIntent(event, fuzzyScale = 1) {
   const viewportRect = canvas.getBoundingClientRect();
   const pointerX = event.clientX;
   const pointerY = event.clientY;
   const candidates = [];
+  const scale = Number.isFinite(fuzzyScale) ? fuzzyScale : 1;
 
   for (const item of items) {
     if (!isPickupIntentCandidate(item)) continue;
@@ -2060,7 +2519,7 @@ function pickItemByIntent(event) {
     if (!projectedRect) continue;
 
     const distance = getDistanceToRectPx(pointerX, pointerY, projectedRect);
-    const radius = isSmallPickupItem(item) ? PICKUP_SMALL_ITEM_RADIUS_PX : PICKUP_INTENT_RADIUS_PX;
+    const radius = (isSmallPickupItem(item) ? PICKUP_SMALL_ITEM_RADIUS_PX : PICKUP_INTENT_RADIUS_PX) * scale;
     if (distance > radius) continue;
 
     let score = -(distance / radius) * PICKUP_DISTANCE_WEIGHT;
@@ -4758,7 +5217,10 @@ function resetLevel() {
     setItemShadow(item, true);
   }
   reconcilePlacementInvariants();
-  layoutTrayQueue({ animate: false });
+  trayScrollOffsetX = 0;
+  trayScrollVelocity = 0;
+  trayPointerMode = 'idle';
+  layoutTrayQueue({ animate: false, preserveScroll: false });
   hideGridGuide();
   updateGhost(null);
   startOpeningSequence();
@@ -4880,6 +5342,8 @@ function clearPointerAndDragSession({ restoreActive = false } = {}) {
     activeItem = null;
   }
   candidate = null;
+  trayPointerMode = 'idle';
+  stopTrayScrollMomentum();
   clearPlacementOccluderFade();
   updateDragSpeedHud(null);
 }
@@ -4949,7 +5413,11 @@ function undoLastMove() {
   refreshStatus();
 }
 
-function layoutTrayQueue({ animate = true } = {}) {
+function layoutTrayQueue({ animate = true, preserveScroll = true } = {}) {
+  if (A2_FULL_TRAY_SCROLL) {
+    layoutTrayQueueA2({ animate, preserveScroll });
+    return;
+  }
   const visibleItems = trayQueue.slice(0, trayVisibleCount);
   const visibleWidths = visibleItems.map((item) => getTrayItemWidth(item));
   const slotXs = getTraySlotXs(visibleWidths);
@@ -4977,6 +5445,61 @@ function layoutTrayQueue({ animate = true } = {}) {
       }
     }
     item.trayVisible = true;
+  });
+}
+
+/**
+ * A2 v2 布局：
+ * - n=1：居中 0
+ * - n=2：对称 ±pitch/2
+ * - n≥3：pitch 横排；offset=0 时前三件在 [-pitch,0,+pitch]
+ * - 边缘用透明度淡出（无硬切闪现）
+ */
+function layoutTrayQueueA2({ animate = true, preserveScroll = true } = {}) {
+  if (!trayQueue.length) {
+    trayBaseCenters = [];
+    trayContentMinX = 0;
+    trayContentMaxX = 0;
+    trayScrollOffsetX = 0;
+    return;
+  }
+
+  const pitch = TRAY_SLOT_PITCH;
+  const n = trayQueue.length;
+  let centers;
+  if (n === 1) {
+    centers = [0];
+  } else if (n === 2) {
+    centers = [-pitch * 0.5, pitch * 0.5];
+  } else {
+    // i=0 → -pitch，i=1 → 0，i=2 → +pitch
+    centers = trayQueue.map((_, i) => (i - 1) * pitch);
+  }
+  const widths = trayQueue.map((item) => getTrayItemWidth(item));
+
+  trayBaseCenters = centers;
+  trayContentMinX = centers[0] - widths[0] / 2;
+  trayContentMaxX = centers[centers.length - 1] + widths[widths.length - 1] / 2;
+
+  if (!preserveScroll) trayScrollOffsetX = 0;
+  clampTrayScrollOffset();
+
+  const scrolling = trayPointerMode === 'scroll';
+  trayQueue.forEach((item, index) => {
+    const centerX = centers[index] + trayScrollOffsetX;
+    const target = new THREE.Vector3(centerX, getTableItemY(item, trayScale), trayZ);
+    const wasVisible = item.mesh.visible;
+    item.homePosition = target.clone();
+    item.targetPosition = target.clone();
+    if (!item.placed && item !== activeItem && item !== hintMove?.item) {
+      setItemScale(item, trayScale);
+      if (!animate || scrolling || wasVisible) {
+        item.mesh.position.copy(target);
+      } else {
+        item.mesh.position.set(target.x + trayEntryOffsetX * 0.25, target.y, target.z);
+      }
+      applyTrayItemEdgeFade(item, centerX);
+    }
   });
 }
 
@@ -5485,8 +6008,12 @@ function resize() {
 
 function animate() {
   requestAnimationFrame(animate);
+  const now = performance.now();
+  const dt = Math.min(0.05, Math.max(0.001, (now - lastFrameTime) / 1000));
+  lastFrameTime = now;
   updateBoxSequence();
   updateHintMove();
+  updateTrayScrollMomentum(dt);
   updateTrayAnimations();
   updateRotationAnimations();
   updateScaleAnimations();
