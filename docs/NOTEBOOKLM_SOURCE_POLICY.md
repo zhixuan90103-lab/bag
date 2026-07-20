@@ -26,6 +26,26 @@
    - 已清理的调研综合。
    - 只保留当前仍有效的调研结论和已废弃方案清单。
 
+6. `docs/research/UNDO-RESET-ORPHAN-BUG-2026-07-20.md`
+   - 撤销/重置后无法摆放与碰撞错乱的根因与修复。
+   - 核心：Undo 不得快照拖拽中间态；`placed` 与 `trayQueue` 必须互斥且覆盖全集。
+   - 对应代码：`getSnapshotItemState`、`reconcilePlacementInvariants`、`clearPointerAndDragSession`。
+
+7. `docs/research/PINNED-STACK-PICKUP-RULE-2026-07-20.md`
+   - 箱内叠放：下层被上层 footprint 压住时不可拿起。
+   - 核心：`isItemPinnedByStack`；拾取与 `beginDragItem` 拦截；Toast「先移开上面的物品」。
+   - 与完整支撑规则一致，禁止抽走支撑导致悬空。
+
+8. A2 全量托盘手势（规划中，未实现前勿当现码）
+   - `docs/research/A2-TRAY-SCROLL-DRAG-RESEARCH-PLAN.md`（**流程权威**；外网检索已关）
+   - `docs/research/A2-SELF-CONSISTENCY-EVAL-2026-07-20.md`（自洽评估 4.2/5 GO R4）
+   - `docs/research/A2-R3-audit-and-gaps.md`（全链反查；推荐定案包）
+   - `docs/research/A2-gesture-audit-and-gaps.md`（R2）
+   - `docs/research/A2-TRAY-SCROLL-VS-DRAG-GESTURE-RESEARCH-2026-07-20.md`（R1）
+   - `docs/research/A2-R3-PRODUCT-AND-PHYSICS-RESEARCH-2026-07-20.md`（R3）
+   - 推荐定案：自研横滑 + 轴竞争 + 难判 SCROLL；长按关；未入箱消失制；真 3D；free 无 snap。
+   - 文案约束：说「可浏览全量」，不说「一屏展示全部」。
+
 ## 2. 当前最终口径
 
 NotebookLM 回答当前项目问题时，必须遵守以下规则：

@@ -634,6 +634,25 @@ const ghostGroup = new THREE.Group();
 const gridGuideGroup = new THREE.Group();
 const gridHeightGuideGroup = new THREE.Group();
 scene.add(boardGroup, trayGroup, ghostGroup, itemGroup);
+/** 拖拽中手中物品透明度（略透，便于看清脚下 ghost） */
+const DRAG_ITEM_OPACITY = 0.8;
+/** 遮挡落点 ghost 的已放块半透明（后方落点被高块挡住时） */
+const OCCLUDER_ITEM_OPACITY = 0.68;
+/** ghost 观感强度（与原先一致） */
+const GHOST_FILL_OPACITY = 0.58;
+const GHOST_HINT_FILL_OPACITY = 0.36;
+const GHOST_EDGE_OPACITY = 0.95;
+/** 超高/顶层不可放时，整面顶格红色提示（必须弱于红色 ghost） */
+const TOP_BLOCK_GRID_FILL_OPACITY = 0.22;
+const TOP_BLOCK_GRID_LINE_OPACITY = 0.4;
+const TOP_BLOCK_GRID_BORDER_OPACITY = 0.48;
+/** 当前因遮挡 ghost 而被淡化的已放物品 */
+const fadedOccluderItems = new Set();
+/** 网格引导材质引用（rebuildBoard 时重建） */
+let gridGuideFillMat = null;
+let gridGuideLineMat = null;
+let gridGuideBorderMat = null;
+let gridGuideHeightMat = null;
 
 /** 箱内底面 y（与 base 顶面一致：base.y + 半厚） */
 const BOARD_SURFACE_Y = 0.015 + 0.04;
@@ -795,6 +814,10 @@ function rebuildBoard() {
   clearGroup(boardGroup);
   clearGroup(gridGuideGroup);
   clearGroup(gridHeightGuideGroup);
+  gridGuideFillMat = null;
+  gridGuideLineMat = null;
+  gridGuideBorderMat = null;
+  gridGuideHeightMat = null;
   gridGuideGroup.add(gridHeightGuideGroup);
 
   frontWall = null;
@@ -847,42 +870,43 @@ function rebuildBoard() {
 
   boardGroup.add(gridGuideGroup);
   hideGridGuide();
+  gridGuideFillMat = new THREE.MeshBasicMaterial({
+    color: '#9ca3af',
+    transparent: true,
+    opacity: 0.16,
+    depthWrite: false,
+    side: THREE.DoubleSide
+  });
   const guideFill = new THREE.Mesh(
     new THREE.PlaneGeometry(grid.width, grid.depth),
-    new THREE.MeshBasicMaterial({
-      color: '#9ca3af',
-      transparent: true,
-      opacity: 0.16,
-      depthWrite: false,
-      side: THREE.DoubleSide
-    })
+    gridGuideFillMat
   );
   guideFill.rotation.x = -Math.PI / 2;
   guideFill.position.y = 0.072;
   gridGuideGroup.add(guideFill);
 
-  const lineMat = new THREE.LineBasicMaterial({
+  gridGuideLineMat = new THREE.LineBasicMaterial({
     color: '#6b7280',
     transparent: true,
     opacity: 0.82
   });
   for (let c = 0; c <= grid.cols; c += 1) {
     const x = grid.left + c * grid.cell;
-    addLine(x, grid.top, x, grid.top + grid.depth, lineMat);
+    addLine(x, grid.top, x, grid.top + grid.depth, gridGuideLineMat);
   }
   for (let r = 0; r <= grid.rows; r += 1) {
     const z = grid.top + r * grid.cell;
-    addLine(grid.left, z, grid.left + grid.width, z, lineMat);
+    addLine(grid.left, z, grid.left + grid.width, z, gridGuideLineMat);
   }
-  const borderMat = new THREE.LineBasicMaterial({
+  gridGuideBorderMat = new THREE.LineBasicMaterial({
     color: '#4b5563',
     transparent: true,
     opacity: 0.94
   });
-  addLine(grid.left, grid.top, grid.left + grid.width, grid.top, borderMat);
-  addLine(grid.left + grid.width, grid.top, grid.left + grid.width, grid.top + grid.depth, borderMat);
-  addLine(grid.left + grid.width, grid.top + grid.depth, grid.left, grid.top + grid.depth, borderMat);
-  addLine(grid.left, grid.top + grid.depth, grid.left, grid.top, borderMat);
+  addLine(grid.left, grid.top, grid.left + grid.width, grid.top, gridGuideBorderMat);
+  addLine(grid.left + grid.width, grid.top, grid.left + grid.width, grid.top + grid.depth, gridGuideBorderMat);
+  addLine(grid.left + grid.width, grid.top + grid.depth, grid.left, grid.top + grid.depth, gridGuideBorderMat);
+  addLine(grid.left, grid.top + grid.depth, grid.left, grid.top, gridGuideBorderMat);
 
   resetBoxRigPose();
 }
@@ -911,6 +935,7 @@ function stopGameplayInteraction() {
   activePointerId = null;
   if (activeItem) {
     restoreActiveItem();
+    setItemOpacity(activeItem, 1);
     activeItem = null;
     candidate = null;
   }
@@ -918,6 +943,7 @@ function stopGameplayInteraction() {
   hintMove = null;
   hideGridGuide();
   updateGhost(null);
+  clearPlacementOccluderFade();
   boxAnim = null;
   toastEl.classList.remove('show');
   hideSettlePanel();
@@ -1102,13 +1128,20 @@ function setGridGuideLevel(level = 0) {
 }
 
 function updateGridHeightGuide(level) {
-  gridHeightGuideGroup.clear();
+  // 只清子物体，保留材质引用给 applyGridGuideStyle 复用
+  while (gridHeightGuideGroup.children.length > 0) {
+    const child = gridHeightGuideGroup.children[0];
+    gridHeightGuideGroup.remove(child);
+    if (child.geometry) child.geometry.dispose();
+  }
   if (level <= 0) return;
-  const mat = new THREE.LineBasicMaterial({
-    color: '#4b5563',
-    transparent: true,
-    opacity: 0.68
-  });
+  if (!gridGuideHeightMat) {
+    gridGuideHeightMat = new THREE.LineBasicMaterial({
+      color: '#4b5563',
+      transparent: true,
+      opacity: 0.68
+    });
+  }
   const yTop = 0.095;
   const yBottom = yTop - level * grid.levelHeight;
   const corners = [
@@ -1122,18 +1155,56 @@ function updateGridHeightGuide(level) {
       new THREE.Vector3(x, yTop, z),
       new THREE.Vector3(x, yBottom, z)
     ]);
-    const line = new THREE.Line(geo, mat);
+    const line = new THREE.Line(geo, gridGuideHeightMat);
     gridHeightGuideGroup.add(line);
   }
 }
 
-function showGridGuide(level = 0) {
+/**
+ * 网格引导配色。
+ * heightExceeded：整面顶格淡红，强化「到顶放不下」；填充/线弱于红色 ghost（0.58）。
+ */
+function applyGridGuideStyle({ heightExceeded = false } = {}) {
+  if (!gridGuideFillMat || !gridGuideLineMat || !gridGuideBorderMat) return;
+  if (heightExceeded) {
+    // 与 ghost 同色相，整体更淡
+    gridGuideFillMat.color.set('#ef4444');
+    gridGuideFillMat.opacity = TOP_BLOCK_GRID_FILL_OPACITY;
+    gridGuideLineMat.color.set('#f87171');
+    gridGuideLineMat.opacity = TOP_BLOCK_GRID_LINE_OPACITY;
+    gridGuideBorderMat.color.set('#f87171');
+    gridGuideBorderMat.opacity = TOP_BLOCK_GRID_BORDER_OPACITY;
+    if (gridGuideHeightMat) {
+      gridGuideHeightMat.color.set('#f87171');
+      gridGuideHeightMat.opacity = TOP_BLOCK_GRID_LINE_OPACITY;
+    }
+  } else {
+    gridGuideFillMat.color.set('#9ca3af');
+    gridGuideFillMat.opacity = 0.16;
+    gridGuideLineMat.color.set('#6b7280');
+    gridGuideLineMat.opacity = 0.82;
+    gridGuideBorderMat.color.set('#4b5563');
+    gridGuideBorderMat.opacity = 0.94;
+    if (gridGuideHeightMat) {
+      gridGuideHeightMat.color.set('#4b5563');
+      gridGuideHeightMat.opacity = 0.68;
+    }
+  }
+  gridGuideFillMat.needsUpdate = true;
+  gridGuideLineMat.needsUpdate = true;
+  gridGuideBorderMat.needsUpdate = true;
+  if (gridGuideHeightMat) gridGuideHeightMat.needsUpdate = true;
+}
+
+function showGridGuide(level = 0, { heightExceeded = false } = {}) {
   setGridGuideLevel(level);
+  applyGridGuideStyle({ heightExceeded });
   gridGuideGroup.visible = true;
 }
 
 function hideGridGuide() {
   gridGuideGroup.visible = false;
+  applyGridGuideStyle({ heightExceeded: false });
 }
 
 /**
@@ -1305,6 +1376,7 @@ function startOpeningSequence() {
   activePointerId = null;
   if (activeItem) {
     restoreActiveItem();
+    setItemOpacity(activeItem, 1);
     activeItem = null;
     candidate = null;
   }
@@ -1332,6 +1404,7 @@ function startClosingSequence() {
   activePointerId = null;
   if (activeItem) {
     restoreActiveItem();
+    setItemOpacity(activeItem, 1);
     activeItem = null;
     candidate = null;
   }
@@ -1794,6 +1867,11 @@ function onPointerDown(event) {
 }
 
 function beginDragItem(item, event) {
+  // 双保险：箱内被上层压住的块不可进入拖拽
+  if (item?.placed && isItemPinnedByStack(item)) {
+    showToast('先移开上面的物品');
+    return;
+  }
   clearHint();
   activeItem = item;
   activePointerId = event.pointerId;
@@ -1833,6 +1911,9 @@ function beginDragItem(item, event) {
   activeItem.mesh.position.y = pickupY;
   activeItem.placed = false;
   setItemShadow(activeItem, false);
+  // 半透明手中块，避免完全盖住落点 ghost
+  setItemOpacity(activeItem, DRAG_ITEM_OPACITY);
+  clearPlacementOccluderFade();
   updatePointer(event);
   dragPlane.constant = -pickupY;
   raycaster.ray.intersectPlane(dragPlane, hitPoint);
@@ -1873,8 +1954,12 @@ function onPointerMove(event) {
   candidate = getIntentCandidate(activeItem, activeItem.mesh.position);
   updateIntentDebugHud(activeItem, activeItem.lastIntentChannel);
   updateActiveItemDragScale();
-  showGridGuide(candidate?.guideLevel ?? candidate?.displayBaseLevel ?? candidate?.baseLevel ?? 0);
+  showGridGuide(
+    candidate?.guideLevel ?? candidate?.displayBaseLevel ?? candidate?.baseLevel ?? 0,
+    { heightExceeded: candidate?.inside && candidate?.reason === 'height-exceeded' }
+  );
   updateGhost(candidate);
+  updatePlacementOccluderFade(candidate);
 }
 
 function onPointerUp(event) {
@@ -1893,6 +1978,7 @@ function onPointerUp(event) {
   event.preventDefault();
   if (gamePhase !== 'play') {
     restoreActiveItem();
+    setItemOpacity(activeItem, 1);
     setItemShadow(activeItem, true);
     activeItem = null;
     activePointerId = null;
@@ -1902,6 +1988,7 @@ function onPointerUp(event) {
     candidate = null;
     hideGridGuide();
     updateGhost(null);
+    clearPlacementOccluderFade();
     updateDragSpeedHud(null);
     return;
   }
@@ -1913,6 +2000,7 @@ function onPointerUp(event) {
   } else {
     restoreActiveItem();
   }
+  setItemOpacity(activeItem, 1);
   setItemShadow(activeItem, true);
   if (activeItem.placed) setItemScale(activeItem, getBoardItemScale());
   activeItem.finalIntentPlacement = null;
@@ -1925,6 +2013,7 @@ function onPointerUp(event) {
   candidate = null;
   hideGridGuide();
   updateGhost(null);
+  clearPlacementOccluderFade();
   updateDragSpeedHud(null);
   refreshStatus();
 }
@@ -1932,9 +2021,25 @@ function onPointerUp(event) {
 function pickItem(event) {
   updatePointer(event);
   const intersects = raycaster.intersectObjects(itemGroup.children, true);
-  const hit = intersects.find((entry) => findItemRoot(entry.object));
-  if (hit) return findItemRoot(hit.object).userData.item;
-  return pickItemByIntent(event);
+  let hitPinned = false;
+  for (const entry of intersects) {
+    const root = findItemRoot(entry.object);
+    if (!root) continue;
+    const item = root.userData.item;
+    if (!item || item === activeItem || item === hintMove?.item) continue;
+    if (!item.mesh.visible) continue;
+    // 上层有压住的块：跳过，优先点到更靠前的上层物品
+    if (item.placed && isItemPinnedByStack(item)) {
+      hitPinned = true;
+      continue;
+    }
+    if (item.placed || item.trayVisible) return item;
+  }
+  const intent = pickItemByIntent(event);
+  if (intent) return intent;
+  // 只点到被压住的底层时给反馈，避免误以为卡死
+  if (hitPinned) showToast('先移开上面的物品');
+  return null;
 }
 
 function findItemRoot(object) {
@@ -1974,7 +2079,40 @@ function pickItemByIntent(event) {
 function isPickupIntentCandidate(item) {
   if (!item || item === activeItem || item === hintMove?.item) return false;
   if (!item.mesh.visible) return false;
-  return Boolean(item.placed || item.trayVisible);
+  if (!item.placed && !item.trayVisible) return false;
+  // 箱内被上层压住的物品不可拿起（否则会抽走支撑，上层悬空）
+  if (item.placed && isItemPinnedByStack(item)) return false;
+  return true;
+}
+
+/**
+ * 箱内物品是否被上层占用压住。
+ * 规则：其 footprint 任一格在自身顶面之上还有其它已放置体素 → 不可挪动。
+ * 例：A 在底层，B 叠在 A 上 → A 被 pin；先移 B 后才可动 A。
+ */
+function isItemPinnedByStack(item) {
+  if (!item?.placed) return false;
+  if (item.gridX == null || item.gridY == null || item.level == null) return false;
+
+  const shape = rotateShape(item.shape, item.rotation);
+  const baseLevel = item.level ?? 0;
+  const topLevel = baseLevel + getItemHeight(item) - 1;
+  if (topLevel >= grid.levels - 1) return false;
+
+  const voxelGrid = buildVoxelGrid();
+  for (let y = 0; y < shape.length; y += 1) {
+    for (let x = 0; x < shape[y].length; x += 1) {
+      if (!shape[y][x]) continue;
+      const cx = item.gridX + x;
+      const cy = item.gridY + y;
+      if (cx < 0 || cy < 0 || cx >= grid.cols || cy >= grid.rows) continue;
+      for (let level = topLevel + 1; level < grid.levels; level += 1) {
+        const occupant = voxelGrid[level]?.[cy]?.[cx];
+        if (occupant != null && occupant !== item.id) return true;
+      }
+    }
+  }
+  return false;
 }
 
 function isSmallPickupItem(item) {
@@ -4090,6 +4228,9 @@ function placeItem(item, next, { recordUndo = true } = {}) {
   item.gridY = next.gy;
   item.level = next.baseLevel;
   item.placed = true;
+  // 落定后清掉拖拽中的「拿起前」缓存，避免污染后续快照
+  item.wasPlaced = false;
+  item.previousPlacement = null;
   trayQueue = trayQueue.filter((entry) => entry !== item);
   const boardScale = getBoardItemScale();
   const shape = next.shape || rotateShape(item.shape, item.rotation);
@@ -4098,8 +4239,10 @@ function placeItem(item, next, { recordUndo = true } = {}) {
   // 落定瞬间对齐旋转：避免「已放置但 mesh 还在转」的半成品感
   setItemRotationImmediate(item, item.rotation);
   setItemScale(item, boardScale);
+  setItemOpacity(item, 1);
   setItemShadow(item, true);
   item.lastValid = { gx: next.gx, gy: next.gy, level: next.baseLevel, rotation: item.rotation };
+  reconcilePlacementInvariants();
   layoutTrayQueue({ animate: true });
 }
 
@@ -4133,6 +4276,7 @@ function restoreActiveItem() {
     activeItem.mesh.position.copy(gridToWorld(activeItem.gridX, activeItem.gridY, shape));
     activeItem.mesh.position.y = getBoardItemY(activeItem, boardScale, activeItem.level);
     setItemScale(activeItem, boardScale);
+    setItemOpacity(activeItem, 1);
     setItemShadow(activeItem, true);
     // 放回箱内原位：仍视为在箱体系，下次拿起 beginDrag 会按 placed 解锁
     clearAutoRotateIntent(activeItem);
@@ -4145,6 +4289,7 @@ function restoreActiveItem() {
   setItemRotationImmediate(activeItem, activeItem.rotation);
   // 放回待放区：平滑缩回预览尺寸
   setItemScaleTarget(activeItem, trayScale);
+  setItemOpacity(activeItem, 1);
   setItemShadow(activeItem, true);
   activeItem.placed = false;
   // 归位托盘：进箱解锁清零，下一次须重新进箱才帮转
@@ -4155,6 +4300,124 @@ function setItemShadow(item, enabled) {
   item.mesh.traverse((object) => {
     if (object.isMesh) object.castShadow = enabled;
   });
+}
+
+/** 拖拽半透明 / 落定不透明；材质需 transparent 才能看清脚下 ghost */
+function setItemOpacity(item, opacity) {
+  if (!item?.mesh) return;
+  const alpha = THREE.MathUtils.clamp(opacity, 0.05, 1);
+  item.mesh.traverse((object) => {
+    if (!object.isMesh || !object.material) return;
+    const mats = Array.isArray(object.material) ? object.material : [object.material];
+    for (const mat of mats) {
+      mat.transparent = alpha < 0.999;
+      mat.opacity = alpha;
+      // 半透明时关掉 depthWrite，减少与 ghost 的排序闪烁
+      mat.depthWrite = alpha >= 0.999;
+      mat.needsUpdate = true;
+    }
+  });
+}
+
+const occluderRaycaster = new THREE.Raycaster();
+const occluderRayOrigin = new THREE.Vector3();
+const occluderRayDir = new THREE.Vector3();
+const occluderSamplePoint = new THREE.Vector3();
+/** 对 ghost 脚印采样视线，避免侧旁块仅因屏幕矩形重叠被误淡化 */
+const OCCLUDER_SAMPLE_UVS = [
+  [0.5, 0.5],
+  [0.2, 0.2], [0.8, 0.2], [0.2, 0.8], [0.8, 0.8],
+  [0.5, 0.15], [0.5, 0.85], [0.15, 0.5], [0.85, 0.5]
+];
+
+const ghostOcclusionSamples = OCCLUDER_SAMPLE_UVS.map(() => new THREE.Vector3());
+
+/**
+ * ghost 脚印平面上的世界坐标采样点（略抬高，对应可见提示面）。
+ * @returns {number} 有效采样数量
+ */
+function fillGhostOcclusionSamples(candidate) {
+  if (!candidate?.shape) return 0;
+  const shape = candidate.shape;
+  const cols = shape[0].length;
+  const rows = shape.length;
+  const origin = gridToWorld(candidate.gx, candidate.gy, shape);
+  const displayBaseLevel = candidate.displayBaseLevel ?? candidate.baseLevel ?? 0;
+  const y = getBoardSurfaceY() + displayBaseLevel * grid.levelHeight + 0.06;
+  const halfW = (cols * grid.cell) / 2;
+  const halfD = (rows * grid.cell) / 2;
+  // 略向内收，减少擦边误判
+  const inset = Math.min(grid.cell * 0.18, halfW * 0.45, halfD * 0.45);
+  const minX = origin.x - halfW + inset;
+  const maxX = origin.x + halfW - inset;
+  const minZ = origin.z - halfD + inset;
+  const maxZ = origin.z + halfD - inset;
+  for (let i = 0; i < OCCLUDER_SAMPLE_UVS.length; i += 1) {
+    const [u, v] = OCCLUDER_SAMPLE_UVS[i];
+    ghostOcclusionSamples[i].set(
+      THREE.MathUtils.lerp(minX, maxX, u),
+      y,
+      THREE.MathUtils.lerp(minZ, maxZ, v)
+    );
+  }
+  return OCCLUDER_SAMPLE_UVS.length;
+}
+
+/**
+ * 拖拽时：仅当已放块真实挡住「相机 → 落点 ghost」视线时才淡化。
+ * 侧旁邻接、无高度挡视线的块不会触发（修复原先屏幕 AABB 误伤）。
+ */
+function updatePlacementOccluderFade(candidate) {
+  const next = new Set();
+  if (candidate?.inside && activeItem) {
+    const sampleCount = fillGhostOcclusionSamples(candidate);
+    const meshes = [];
+    for (const item of items) {
+      if (!item.placed || item === activeItem || !item.mesh?.visible) continue;
+      meshes.push(item.mesh);
+    }
+    if (meshes.length && sampleCount) {
+      occluderRayOrigin.copy(camera.position);
+      for (let i = 0; i < sampleCount; i += 1) {
+        const sample = ghostOcclusionSamples[i];
+        occluderRayDir.copy(sample).sub(occluderRayOrigin);
+        const dist = occluderRayDir.length();
+        if (dist < 1e-4) continue;
+        occluderRayDir.multiplyScalar(1 / dist);
+        occluderRaycaster.set(occluderRayOrigin, occluderRayDir);
+        occluderRaycaster.far = dist - 0.04;
+        occluderRaycaster.near = 0.05;
+        const hits = occluderRaycaster.intersectObjects(meshes, true);
+        for (const hit of hits) {
+          if (hit.distance >= dist - 0.04) continue;
+          let root = hit.object;
+          while (root && root.parent !== itemGroup) root = root.parent;
+          const item = root?.userData?.item;
+          if (item?.placed && item !== activeItem) next.add(item);
+        }
+      }
+    }
+  }
+
+  for (const item of fadedOccluderItems) {
+    if (!next.has(item) && item !== activeItem) setItemOpacity(item, 1);
+  }
+  for (const item of next) {
+    setItemOpacity(item, OCCLUDER_ITEM_OPACITY);
+  }
+  fadedOccluderItems.clear();
+  for (const item of next) fadedOccluderItems.add(item);
+}
+
+function clearPlacementOccluderFade() {
+  for (const item of fadedOccluderItems) {
+    if (item !== activeItem) setItemOpacity(item, 1);
+  }
+  fadedOccluderItems.clear();
+  // 兜底：所有已放块恢复不透明（避免集合漏项）
+  for (const item of items) {
+    if (item.placed && item !== activeItem) setItemOpacity(item, 1);
+  }
 }
 
 function gridToWorld(gx, gy, shape) {
@@ -4168,15 +4431,16 @@ function gridToWorld(gx, gy, shape) {
 }
 
 function updateGhost(next) {
-  ghostGroup.clear();
+  clearGroup(ghostGroup);
   if (!next?.inside) return;
   const shape = next.shape;
   const height = 0.045;
   const ghostColor = next.valid ? '#22c55e' : '#ef4444';
+  const fillOpacity = next.hint ? GHOST_HINT_FILL_OPACITY : GHOST_FILL_OPACITY;
   const mat = new THREE.MeshBasicMaterial({
     color: ghostColor,
     transparent: true,
-    opacity: next.hint ? 0.36 : 0.58,
+    opacity: fillOpacity,
     depthWrite: false
   });
   const origin = gridToWorld(next.gx, next.gy, shape);
@@ -4195,7 +4459,7 @@ function updateGhost(next) {
     new THREE.LineBasicMaterial({
       color: ghostColor,
       transparent: true,
-      opacity: 0.95
+      opacity: GHOST_EDGE_OPACITY
     })
   );
   edge.position.copy(ghost.position);
@@ -4485,6 +4749,7 @@ function resetLevel() {
     item.targetRotationY = undefined;
     item.finalIntentPlacement = null;
     item.dragStartRotation = null;
+    item.wasPlaced = false;
     item.previousPlacement = null;
     clearAssistRotateSession(item);
     setItemRotationImmediate(item, item.rotation);
@@ -4492,27 +4757,131 @@ function resetLevel() {
     setItemScale(item, trayScale);
     setItemShadow(item, true);
   }
+  reconcilePlacementInvariants();
   layoutTrayQueue({ animate: false });
   hideGridGuide();
   updateGhost(null);
   startOpeningSequence();
 }
 
+/**
+ * 写入撤销栈的「逻辑放置态」。
+ * beginDrag 会把 placed 置 false；若直接快照内存态，箱内重放后再撤销会变成
+ * 「既不在 trayQueue、也不 placed」的孤儿块，导致穿模/拖不起。
+ */
+function getSnapshotItemState(item) {
+  if (item === activeItem && item.wasPlaced && item.previousPlacement) {
+    const prev = item.previousPlacement;
+    return {
+      id: item.id,
+      rotation: prev.rotation,
+      trayRotation: item.trayRotation,
+      placed: true,
+      gridX: prev.gx,
+      gridY: prev.gy,
+      level: prev.level,
+      lastValid: item.lastValid
+        ? { ...item.lastValid }
+        : { gx: prev.gx, gy: prev.gy, level: prev.level, rotation: prev.rotation }
+    };
+  }
+
+  const placed = Boolean(item.placed);
+  return {
+    id: item.id,
+    rotation: item.rotation,
+    trayRotation: item.trayRotation,
+    placed,
+    gridX: placed ? item.gridX : null,
+    gridY: placed ? item.gridY : null,
+    level: placed ? item.level : null,
+    lastValid: item.lastValid ? { ...item.lastValid } : null
+  };
+}
+
+/**
+ * placed 与 trayQueue 互斥且覆盖全部物品。
+ * 未放置清脏坐标；去掉拖拽缓存，避免后续快照/拾取再污染。
+ */
+function reconcilePlacementInvariants() {
+  const seen = new Set();
+  const nextQueue = [];
+
+  for (const item of trayQueue) {
+    if (!item || item.placed || seen.has(item.id)) continue;
+    seen.add(item.id);
+    nextQueue.push(item);
+  }
+
+  for (const item of items) {
+    item.wasPlaced = false;
+    item.previousPlacement = null;
+    if (item.placed) {
+      if (item.gridX == null || item.gridY == null || item.level == null) {
+        // 损坏的已放置态：降级回待放，避免体素写崩
+        item.placed = false;
+        item.gridX = null;
+        item.gridY = null;
+        item.level = null;
+      }
+    } else {
+      item.gridX = null;
+      item.gridY = null;
+      item.level = null;
+    }
+
+    if (!item.placed && !seen.has(item.id)) {
+      seen.add(item.id);
+      nextQueue.push(item);
+    }
+  }
+
+  trayQueue = nextQueue.filter((item) => !item.placed);
+}
+
 function pushUndoSnapshot() {
+  const itemStates = items.map((item) => getSnapshotItemState(item));
+  const logicallyPlacedIds = new Set(
+    itemStates.filter((state) => state.placed).map((state) => state.id)
+  );
+
+  const trayIds = [];
+  const seenTray = new Set();
+  for (const item of trayQueue) {
+    if (!item || logicallyPlacedIds.has(item.id) || seenTray.has(item.id)) continue;
+    seenTray.add(item.id);
+    trayIds.push(item.id);
+  }
+  for (const state of itemStates) {
+    if (state.placed || seenTray.has(state.id)) continue;
+    seenTray.add(state.id);
+    trayIds.push(state.id);
+  }
+
   undoStack.push({
     completionShown,
-    trayQueueIds: trayQueue.map((item) => item.id),
-    items: items.map((item) => ({
-      id: item.id,
-      rotation: item.rotation,
-      trayRotation: item.trayRotation,
-      placed: item.placed,
-      gridX: item.gridX,
-      gridY: item.gridY,
-      level: item.level,
-      lastValid: item.lastValid ? { ...item.lastValid } : null
-    }))
+    trayQueueIds: trayIds,
+    items: itemStates
   });
+}
+
+/** 撤销/切关前清掉指针与拖拽会话；有完整快照时不必 restore，避免闪回错误位 */
+function clearPointerAndDragSession({ restoreActive = false } = {}) {
+  releasePointerCaptureSafe(pendingPointerId);
+  releasePointerCaptureSafe(activePointerId);
+  pendingPointerItem = null;
+  pendingPointerId = null;
+  pendingPointerStart = null;
+  pendingPointerEvent = null;
+  activePointerId = null;
+  if (activeItem) {
+    if (restoreActive) restoreActiveItem();
+    setItemOpacity(activeItem, 1);
+    activeItem = null;
+  }
+  candidate = null;
+  clearPlacementOccluderFade();
+  updateDragSpeedHud(null);
 }
 
 function undoLastMove() {
@@ -4530,13 +4899,8 @@ function undoLastMove() {
     return;
   }
 
-  if (activeItem) {
-    restoreActiveItem();
-    activeItem = null;
-    activePointerId = null;
-    candidate = null;
-  }
-
+  // 整局由快照重铺，无需 restore 当前拖拽中间态
+  clearPointerAndDragSession({ restoreActive: false });
   clearHint();
   completionShown = snapshot.completionShown;
   toastEl.classList.remove('show');
@@ -4546,15 +4910,16 @@ function undoLastMove() {
   for (const state of snapshot.items) {
     const item = itemById.get(state.id);
     if (!item) continue;
-    item.placed = state.placed;
+    item.placed = Boolean(state.placed);
     item.rotation = state.rotation;
-    item.trayRotation = state.trayRotation ?? (state.placed ? item.trayRotation : state.rotation);
-    item.gridX = state.gridX;
-    item.gridY = state.gridY;
-    item.level = state.level;
+    item.trayRotation = state.trayRotation ?? (item.placed ? item.trayRotation : state.rotation);
+    item.gridX = item.placed ? state.gridX : null;
+    item.gridY = item.placed ? state.gridY : null;
+    item.level = item.placed ? state.level : null;
     item.lastValid = state.lastValid;
     item.finalIntentPlacement = null;
     item.dragStartRotation = null;
+    item.wasPlaced = false;
     item.previousPlacement = null;
     item.targetRotationY = undefined;
     if (!item.placed) clearAssistRotateSession(item);
@@ -4569,12 +4934,15 @@ function undoLastMove() {
       item.mesh.visible = true;
       item.mesh.position.copy(gridToWorld(item.gridX, item.gridY, shape));
       item.mesh.position.y = getBoardItemY(item, boardScale, item.level);
+      item.trayVisible = false;
+      item.targetPosition = null;
     } else {
       item.trayVisible = false;
       item.targetPosition = null;
     }
   }
 
+  reconcilePlacementInvariants();
   layoutTrayQueue({ animate: false });
   hideGridGuide();
   updateGhost(null);
