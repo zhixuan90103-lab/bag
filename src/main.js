@@ -34,11 +34,12 @@ const TRAY_TAP_MAX_MS = 320;
 const TRAY_SCROLL_VELOCITY_FRICTION = 6.5;
 const TRAY_SCROLL_VELOCITY_EPS = 0.02;
 /**
- * 橡皮筋：可拉约 1 件长度（线性阻尼，不再双重压缩）
- * 松手：较快弹回合法边
+ * 橡皮筋：最多约 1 件长；跟手系数随越界增大而变小（先松后紧）
+ * pull(0)≈0.92 → pull(满)≈0.18
  */
 const TRAY_RUBBER_MAX = TRAY_SLOT_PITCH;
-const TRAY_RUBBER_PULL = 0.62;
+const TRAY_RUBBER_PULL_START = 0.92;
+const TRAY_RUBBER_PULL_END = 0.18;
 const TRAY_RUBBER_STIFFNESS = 48;
 const TRAY_RUBBER_DAMPING = 9;
 /** 淡出带：三槽全显，外侧渐隐（无 hard hide 闪现） */
@@ -1955,35 +1956,71 @@ function getTrayScrollBounds() {
 }
 
 /**
- * 将 delta 施加到 scroll offset：界内 1:1；越界线性阻尼，最多再拉约 1 件长。
- * （不做双重非线性，避免「完全拉不动」）
+ * 越界跟手系数：越界比例 t∈[0,1] 时从松到紧（ease-in）。
+ */
+function trayRubberPullFactor(overAbs) {
+  const t = THREE.MathUtils.clamp(overAbs / Math.max(TRAY_RUBBER_MAX, 1e-4), 0, 1);
+  // t^1.35：前半段保持较松，后半段快速变沉
+  const eased = t ** 1.35;
+  return THREE.MathUtils.lerp(TRAY_RUBBER_PULL_START, TRAY_RUBBER_PULL_END, eased);
+}
+
+/**
+ * 界内 1:1；越界分段：到边之前全跟手，越过后按「先松后紧」系数，最多再拉约 1 件长。
  */
 function applyTrayScrollDelta(deltaX) {
   const { min, max } = getTrayScrollBounds();
-  const cur = trayScrollOffsetX;
-  let next = cur + deltaX;
+  let cur = trayScrollOffsetX;
 
-  if (next > max) {
-    if (cur < max) {
-      const toEdge = max - cur;
-      const rest = deltaX - toEdge;
-      next = max + rest * TRAY_RUBBER_PULL;
-    } else {
-      next = cur + deltaX * TRAY_RUBBER_PULL;
+  // 从界内跨过边界：先 1:1 走到边，剩余再套橡皮筋
+  if (cur <= max && cur >= min) {
+    const unclamped = cur + deltaX;
+    if (unclamped > max) {
+      const rest = unclamped - max;
+      const over = rest * trayRubberPullFactor(0);
+      trayScrollOffsetX = Math.min(max + over, max + TRAY_RUBBER_MAX);
+      return;
     }
-    next = Math.min(next, max + TRAY_RUBBER_MAX);
-  } else if (next < min) {
-    if (cur > min) {
-      const toEdge = cur - min;
-      const rest = -deltaX - toEdge;
-      next = min - rest * TRAY_RUBBER_PULL;
-    } else {
-      next = cur + deltaX * TRAY_RUBBER_PULL;
+    if (unclamped < min) {
+      const rest = min - unclamped;
+      const over = rest * trayRubberPullFactor(0);
+      trayScrollOffsetX = Math.max(min - over, min - TRAY_RUBBER_MAX);
+      return;
     }
-    next = Math.max(next, min - TRAY_RUBBER_MAX);
+    trayScrollOffsetX = unclamped;
+    return;
   }
 
-  trayScrollOffsetX = next;
+  // 已在 max 外侧
+  if (cur > max) {
+    if (deltaX < 0) {
+      // 往回拉：接近 1:1，回到界内后按界内处理
+      trayScrollOffsetX = cur + deltaX;
+      if (trayScrollOffsetX < max) {
+        // 若一帧跨过整段内侧，不再二次阻尼
+        trayScrollOffsetX = Math.max(trayScrollOffsetX, min);
+      }
+      return;
+    }
+    const already = cur - max;
+    const add = deltaX * trayRubberPullFactor(already);
+    trayScrollOffsetX = Math.min(max + already + add, max + TRAY_RUBBER_MAX);
+    return;
+  }
+
+  // 已在 min 外侧
+  if (cur < min) {
+    if (deltaX > 0) {
+      trayScrollOffsetX = cur + deltaX;
+      if (trayScrollOffsetX > min) {
+        trayScrollOffsetX = Math.min(trayScrollOffsetX, max);
+      }
+      return;
+    }
+    const already = min - cur;
+    const add = (-deltaX) * trayRubberPullFactor(already);
+    trayScrollOffsetX = Math.max(min - already - add, min - TRAY_RUBBER_MAX);
+  }
 }
 
 /**
